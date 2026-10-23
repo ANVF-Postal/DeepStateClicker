@@ -154,13 +154,13 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		// The menu is intentionally left-aligned. These rows correspond to its
 		// three options; clicking an option selects it immediately.
 		switch {
-		case y >= 17 && y <= 18:
+		case y == 9:
 			a.menu = 0
 			return a.chooseMenu()
-		case y == 19:
+		case y == 10:
 			a.menu = 1
 			return a.chooseMenu()
-		case y == 20:
+		case y == 11:
 			a.menu = 2
 			return a.chooseMenu()
 		}
