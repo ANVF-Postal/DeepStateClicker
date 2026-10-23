@@ -38,7 +38,7 @@ func New(state game.State) *App {
 }
 
 func (a *App) Run() error {
-	_, err := tea.NewProgram(a, tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
@@ -48,6 +48,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			return a, a.handleMouse(msg.X, msg.Y)
+		}
 	case tickMsg:
 		if a.screen == screenGame {
 			a.state.Advance(time.Time(msg))
@@ -141,6 +145,77 @@ func (a *App) loadGame() {
 	a.state = loaded
 	a.screen = screenGame
 	a.message = "Operation loaded."
+}
+
+// handleMouse maps clicks to the same actions available from the keyboard.
+func (a *App) handleMouse(x, y int) tea.Cmd {
+	switch a.screen {
+	case screenMenu:
+		// The menu is intentionally left-aligned. These rows correspond to its
+		// three options; clicking an option selects it immediately.
+		switch {
+		case y >= 17 && y <= 18:
+			a.menu = 0
+			return a.chooseMenu()
+		case y == 19:
+			a.menu = 1
+			return a.chooseMenu()
+		case y == 20:
+			a.menu = 2
+			return a.chooseMenu()
+		}
+	case screenIntro:
+		if y >= 8 {
+			a.screen = screenGame
+			a.message = ""
+			return tick()
+		}
+	case screenGame:
+		// Tab strip near the top of the dashboard.
+		if y >= 10 && y <= 13 {
+			switch {
+			case x >= 2 && x <= 11:
+				_ = a.state.OpenTab(game.TabPrint)
+				a.message = ""
+			case x >= 13 && x <= 23:
+				_ = a.state.OpenTab(game.TabStore)
+				a.message = ""
+			case x >= 25 && x <= 36 && a.state.EmailUnlocked:
+				if err := a.state.OpenTab(game.TabEmail); err != nil {
+					a.message = err.Error()
+				}
+			}
+			return nil
+		}
+		// Click the visible primary action or upgrade row.
+		switch a.state.CurrentTab {
+		case game.TabPrint:
+			if y >= 15 && y <= 18 {
+				return a.handleGameKey("p")
+			}
+			if y >= 19 && y <= 21 {
+				return a.handleGameKey("s")
+			}
+			if y >= 22 && y <= 24 && a.state.EmailUnlocked {
+				return a.handleGameKey("e")
+			}
+		case game.TabStore:
+			if y >= 15 && y <= 17 {
+				return a.handleGameKey("1")
+			}
+			if y >= 18 && y <= 20 {
+				return a.handleGameKey("2")
+			}
+			if y >= 21 && y <= 23 {
+				return a.handleGameKey("b")
+			}
+		case game.TabEmail:
+			if y >= 20 && y <= 23 {
+				return a.handleGameKey("b")
+			}
+		}
+	}
+	return nil
 }
 
 func (a *App) handleGameKey(key string) tea.Cmd {
