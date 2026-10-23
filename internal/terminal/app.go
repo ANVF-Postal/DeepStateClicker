@@ -82,6 +82,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l":
 			if a.screen == screenMenu {
 				a.loadGame()
+				if a.screen == screenGame {
+					return a, tick()
+				}
 			}
 		case "q", "esc":
 			if a.screen == screenMenu {
@@ -110,6 +113,9 @@ func (a *App) chooseMenu() tea.Cmd {
 		a.message = ""
 	case 1:
 		a.loadGame()
+		if a.screen == screenGame {
+			return tick()
+		}
 	case 2:
 		return tea.Quit
 	}
@@ -255,7 +261,7 @@ func (a *App) introView() string {
 	content := strings.Join([]string{
 		"",
 		titleStyle.Render("FEDERAL RESERVE  /  INTERNAL OPERATIONS"),
-		lineStyle.Render(strings.Repeat("─", min(a.width-6, 66))),
+		lineStyle.Render(strings.Repeat("─", max(0, min(a.width-6, 66)))),
 		"",
 		"You are not an economist.",
 		"You reconcile print counts, replace toner, and go home.",
