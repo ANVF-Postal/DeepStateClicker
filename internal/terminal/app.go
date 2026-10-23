@@ -1,11 +1,12 @@
 package terminal
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"deepstateclicker/internal/game"
 	"deepstateclicker/internal/save"
@@ -13,174 +14,343 @@ import (
 
 const savePath = "saves/autosave.json"
 
-type App struct{ state game.State }
+type screen int
 
-func New(state game.State) *App { return &App{state: state} }
+const (
+	screenMenu screen = iota
+	screenIntro
+	screenGame
+)
+
+type tickMsg time.Time
+
+type App struct {
+	state   game.State
+	screen  screen
+	width   int
+	height  int
+	menu    int
+	message string
+}
+
+func New(state game.State) *App {
+	return &App{state: state, screen: screenMenu, width: 80, height: 24}
+}
 
 func (a *App) Run() error {
-	fmt.Println("DEEP STATE CLICKER")
-	fmt.Println("Every dollar leaves a mark.")
-	fmt.Println()
-	fmt.Println("[N] New operation    [L] Load operation    [Q] Quit")
-	fmt.Print("> ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return scanner.Err()
+	_, err := tea.NewProgram(a, tea.WithAltScreen()).Run()
+	return err
+}
+
+func (a *App) Init() tea.Cmd { return nil }
+
+func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		a.width, a.height = msg.Width, msg.Height
+	case tickMsg:
+		if a.screen == screenGame {
+			a.state.Advance(time.Time(msg))
+			return a, tick()
+		}
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c":
+			a.autosave()
+			return a, tea.Quit
+		case "up", "k":
+			if a.screen == screenMenu && a.menu > 0 {
+				a.menu--
+			}
+		case "down", "j":
+			if a.screen == screenMenu && a.menu < 2 {
+				a.menu++
+			}
+		case "enter":
+			switch a.screen {
+			case screenMenu:
+				return a, a.chooseMenu()
+			case screenIntro:
+				a.screen = screenGame
+				a.message = ""
+				return a, tick()
+			}
+		case "n":
+			if a.screen == screenMenu {
+				a.screen = screenIntro
+			}
+		case "l":
+			if a.screen == screenMenu {
+				a.loadGame()
+			}
+		case "q", "esc":
+			if a.screen == screenMenu {
+				return a, tea.Quit
+			}
+			a.autosave()
+			return a, tea.Quit
+		default:
+			if a.screen == screenGame {
+				return a, a.handleGameKey(msg.String())
+			}
+		}
 	}
-	switch strings.ToLower(strings.TrimSpace(scanner.Text())) {
-	case "q", "quit":
-		return nil
-	case "l", "load":
-		loaded, err := save.Read(savePath)
-		if err != nil {
-			fmt.Printf("Load failed: %v\nStarting a new operation.\n\n", err)
+	return a, nil
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func (a *App) chooseMenu() tea.Cmd {
+	switch a.menu {
+	case 0:
+		a.state = game.NewState(time.Now())
+		a.screen = screenIntro
+		a.message = ""
+	case 1:
+		a.loadGame()
+	case 2:
+		return tea.Quit
+	}
+	return nil
+}
+
+func (a *App) loadGame() {
+	loaded, err := save.Read(savePath)
+	if err != nil {
+		a.message = "No readable save found. Choose NEW OPERATION to begin."
+		return
+	}
+	a.state = loaded
+	a.screen = screenGame
+	a.message = "Operation loaded."
+}
+
+func (a *App) handleGameKey(key string) tea.Cmd {
+	now := time.Now()
+	switch key {
+	case "p", " ":
+		if err := a.state.PrintOneDollar(now); err != nil {
+			a.message = err.Error()
 		} else {
-			a.state = loaded
+			a.message = "One dollar. Crisp, unrecorded, and real."
 		}
-	case "n", "new", "":
-		a.showIntro(scanner)
-		a.state = game.NewState(time.Now())
+	case "1":
+		if a.state.CurrentTab == game.TabStore {
+			if err := a.state.BuyCapacityUpgrade(now); err != nil {
+				a.message = err.Error()
+			} else {
+				a.message = "Cash box installed."
+			}
+		}
+	case "2":
+		if a.state.CurrentTab == game.TabStore {
+			if err := a.state.BuyAutomation(now); err != nil {
+				a.message = err.Error()
+			} else {
+				a.message = "Automation enabled."
+			}
+		}
+	case "s":
+		_ = a.state.OpenTab(game.TabStore)
+		a.message = ""
+	case "e":
+		if err := a.state.OpenTab(game.TabEmail); err != nil {
+			a.message = err.Error()
+		} else if err := a.state.ReadEmail(now); err != nil {
+			a.message = err.Error()
+		} else {
+			a.message = "Message opened."
+		}
+	case "b", "esc":
+		_ = a.state.OpenTab(game.TabPrint)
+		a.message = ""
+	case "v":
+		if err := save.Write(savePath, a.state); err != nil {
+			a.message = "Save failed: " + err.Error()
+		} else {
+			a.message = "Saved to " + savePath
+		}
+	case "h", "?":
+		a.message = "P print  •  S store  •  E email  •  B back  •  V save  •  Q quit"
+	case "q":
+		a.autosave()
+		return tea.Quit
+	}
+	return nil
+}
+
+func (a *App) autosave() {
+	if a.screen == screenGame {
+		if err := save.Write(savePath, a.state); err != nil {
+			a.message = "Autosave failed: " + err.Error()
+		}
+	}
+}
+
+func (a *App) View() string {
+	switch a.screen {
+	case screenMenu:
+		return a.menuView()
+	case screenIntro:
+		return a.introView()
 	default:
-		fmt.Println("Unknown choice. Starting a new operation.")
-		a.showIntro(scanner)
-		a.state = game.NewState(time.Now())
-	}
-	return a.gameLoop(scanner)
-}
-
-func (a *App) showIntro(scanner *bufio.Scanner) {
-	fmt.Println()
-	fmt.Println("FEDERAL RESERVE — INTERNAL OPERATIONS")
-	fmt.Println("You are not an economist. You reconcile print counts, replace toner, and go home.")
-	fmt.Println("Then one count comes back wrong.")
-	fmt.Println("One dollar. No discrepancy in the ledger. No explanation in the logs.")
-	fmt.Println("You run the count again.")
-	fmt.Println()
-	fmt.Print("Press ENTER to continue...")
-	if scanner.Scan() {
-		// Consume the pause using the same scanner as the menu and game loop.
+		return a.gameView()
 	}
 }
 
-func (a *App) gameLoop(scanner *bufio.Scanner) error {
-	input := make(chan string)
-	go func() {
-		for scanner.Scan() {
-			input <- scanner.Text()
+var (
+	ink       = lipgloss.Color("#D8D8D0")
+	muted     = lipgloss.Color("#777970")
+	red       = lipgloss.Color("#B84B45")
+	amber     = lipgloss.Color("#D6B36A")
+	panel     = lipgloss.Color("#20221F")
+	lineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#42453F"))
+	titleStyle = lipgloss.NewStyle().Foreground(ink).Bold(true)
+	subtitleStyle = lipgloss.NewStyle().Foreground(muted).Italic(true)
+	labelStyle = lipgloss.NewStyle().Foreground(muted)
+	valueStyle = lipgloss.NewStyle().Foreground(ink).Bold(true)
+	selectedStyle = lipgloss.NewStyle().Foreground(amber).Bold(true)
+	dangerStyle = lipgloss.NewStyle().Foreground(red)
+)
+
+func (a *App) menuView() string {
+	var b strings.Builder
+	b.WriteString("\n\n")
+	b.WriteString(titleStyle.Render("██████╗ ███████╗███████╗██████╗     ███████╗████████╗ █████╗ ████████╗███████╗"))
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("██╔══██╗██╔════╝██╔════╝██╔══██╗    ██╔════╝╚══██╔══╝██╔══██╗╚══██╔══╝██╔════╝"))
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("██║  ██║█████╗  █████╗  ██████╔╝    ███████╗   ██║   ███████║   ██║   █████╗"))
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("██║  ██║██╔══╝  ██╔══╝  ██╔═══╝     ╚════██║   ██║   ██╔══██║   ██║   ██╔══╝"))
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("██████╔╝███████╗███████╗██║         ███████║   ██║   ██║  ██║   ██║   ███████╗"))
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("╚═════╝ ╚══════╝╚══════╝╚═╝         ╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚══════╝"))
+	b.WriteString("\n\n")
+	b.WriteString(subtitleStyle.Render("Every dollar leaves a mark."))
+	b.WriteString("\n\n")
+	options := []string{"NEW OPERATION", "LOAD OPERATION", "QUIT"}
+	for i, option := range options {
+		if i == a.menu {
+			b.WriteString(selectedStyle.Render("  ▸ " + option))
+		} else {
+			b.WriteString(labelStyle.Render("    " + option))
 		}
-		close(input)
-	}()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		a.render()
-		fmt.Print("\n> ")
-		select {
-		case now := <-ticker.C:
-			a.state.Advance(now)
-		case line, ok := <-input:
-			if !ok {
-				_ = save.Write(savePath, a.state)
-				return nil
-			}
-			cmd := strings.ToLower(strings.TrimSpace(line))
-			now := time.Now()
-			switch cmd {
-			case "p", "print":
-				if err := a.state.PrintOneDollar(now); err != nil {
-					fmt.Println("\n", err)
-				}
-			case "s", "store":
-				_ = a.state.OpenTab(game.TabStore)
-			case "e", "email":
-				if err := a.state.OpenTab(game.TabEmail); err != nil {
-					fmt.Println("\n", err)
-				} else if err := a.state.ReadEmail(now); err != nil {
-					fmt.Println("\n", err)
-				}
-			case "b", "back":
-				_ = a.state.OpenTab(game.TabPrint)
-			case "save":
-				if err := save.Write(savePath, a.state); err != nil {
-					fmt.Println("\nSave failed:", err)
-				} else {
-					fmt.Println("\nSaved.")
-				}
-			case "q", "quit":
-				if err := save.Write(savePath, a.state); err != nil {
-					fmt.Println("Autosave failed:", err)
-				}
-				return nil
-			case "h", "help":
-				a.help()
-			case "1":
-				if a.state.CurrentTab == game.TabStore {
-					if err := a.state.BuyCapacityUpgrade(now); err != nil {
-						fmt.Println("\n", err)
-					}
-				}
-			case "2":
-				if a.state.CurrentTab == game.TabStore {
-					if err := a.state.BuyAutomation(now); err != nil {
-						fmt.Println("\n", err)
-					}
-				}
-			case "":
-			default:
-				fmt.Println("\nUnknown command. Press h for help.")
-			}
-		}
+		b.WriteString("\n")
 	}
+	b.WriteString("\n")
+	if a.message != "" {
+		b.WriteString(dangerStyle.Render(a.message))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(labelStyle.Render("↑/↓ navigate   ENTER select   N new   L load   Q quit"))
+	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 }
 
-func (a *App) render() {
-	fmt.Println("\n------------------------------------------------------------")
-	fmt.Printf("DEEP STATE CLICKER                         RUN: %s\n", a.state.Status)
-	fmt.Printf("TAB: %s    ELAPSED: %ds    RISK: %d/100\n", a.state.CurrentTab, a.state.Tick, a.state.Risk)
-	fmt.Printf("CASH ON HAND  $%s / $%s\n", money(a.state.CashOnHand), money(a.state.CashCapacity))
-	fmt.Printf("TOTAL PRINTED $%s\n", money(a.state.TotalPrinted))
+func (a *App) introView() string {
+	content := strings.Join([]string{
+		"",
+		titleStyle.Render("FEDERAL RESERVE  /  INTERNAL OPERATIONS"),
+		lineStyle.Render(strings.Repeat("─", min(a.width-6, 66))),
+		"",
+		"You are not an economist.",
+		"You reconcile print counts, replace toner, and go home.",
+		"",
+		"Then one count comes back wrong.",
+		"",
+		dangerStyle.Render("ONE DOLLAR."),
+		"No discrepancy in the ledger. No explanation in the logs.",
+		"You run the count again.",
+		"",
+		subtitleStyle.Render("The number does not change."),
+		"",
+		labelStyle.Render("Press ENTER to continue."),
+	}, "\n")
+	return lipgloss.NewStyle().Padding(2, 3).Width(max(40, min(a.width-4, 76))).Render(content)
+}
+
+func (a *App) gameView() string {
+	var b strings.Builder
+	header := titleStyle.Render("DEEP STATE CLICKER") + labelStyle.Render("   /   FEDERAL RESERVE INTERNAL TERMINAL")
+	b.WriteString(header + "\n")
+	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, min(a.width-6, 100)))) + "\n")
+	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk)))
+	b.WriteString("\n\n")
+
+	cashPanel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(muted).Padding(1, 2).Width(max(28, min(a.width-8, 50)))
+	cash := labelStyle.Render("CASH ON HAND") + "\n" +
+		lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand)) +
+		labelStyle.Render("  /  $"+money(a.state.CashCapacity)) + "\n" +
+		labelStyle.Render("TOTAL PRINTED  $"+money(a.state.TotalPrinted))
+	b.WriteString(cashPanel.Render(cash) + "\n\n")
+
+	tabs := []game.Tab{game.TabPrint, game.TabStore}
+	if a.state.EmailUnlocked {
+		tabs = append(tabs, game.TabEmail)
+	}
+	var tabLabels []string
+	for _, tab := range tabs {
+		if tab == a.state.CurrentTab {
+			tabLabels = append(tabLabels, selectedStyle.Render("["+string(tab)+"]"))
+		} else {
+			tabLabels = append(tabLabels, labelStyle.Render(" "+string(tab)+" "))
+		}
+	}
+	b.WriteString(strings.Join(tabLabels, "   ") + "\n")
+	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, min(a.width-6, 100)))) + "\n\n")
+
 	switch a.state.CurrentTab {
 	case game.TabPrint:
-		fmt.Println("\n[PRINT]")
-		fmt.Println("  p  PRINT $1")
-		fmt.Println("  s  STORE")
+		b.WriteString(titleStyle.Render("PRINT CONTROL") + "\n\n")
+		b.WriteString("  " + selectedStyle.Render("[P] PRINT $1") + "\n")
+		b.WriteString(labelStyle.Render("  Manual printing. No receipt. No audit trail.") + "\n")
 		if a.state.EmailUnlocked {
-			fmt.Println("  e  EMAIL  * new message")
+			b.WriteString("\n  " + selectedStyle.Render("[E] INTERNAL EMAIL  •  NEW MESSAGE") + "\n")
 		} else {
-			fmt.Println("  EMAIL  [locked]")
+			b.WriteString("\n  " + labelStyle.Render("INTERNAL EMAIL  •  LOCKED") + "\n")
 		}
+		b.WriteString("\n  " + labelStyle.Render("[S] Open storage and machine upgrades") + "\n")
 	case game.TabStore:
-		fmt.Println("\n[STORE]")
+		b.WriteString(titleStyle.Render("STORAGE & MACHINE UPGRADES") + "\n\n")
 		if a.state.Upgrades.ExpandedCashCapacity {
-			fmt.Println("  1  Cash box capacity — PURCHASED")
+			b.WriteString("  " + selectedStyle.Render("[1] LOCKABLE CASH BOX  •  INSTALLED") + "\n")
 		} else {
-			fmt.Printf("  1  Lockable cash box — $%s (capacity to $2,500)\n", money(game.CapacityUpgradeCost))
+			b.WriteString(fmt.Sprintf("  %s  Lockable cash box  —  $%s\n", selectedStyle.Render("[1]"), money(game.CapacityUpgradeCost)))
+			b.WriteString(labelStyle.Render("      Expands cash-on-hand capacity to $2,500.") + "\n")
 		}
 		if a.state.Upgrades.PrintAutomation {
-			fmt.Println("  2  Quiet print automation — PURCHASED")
+			b.WriteString("  " + selectedStyle.Render("[2] QUIET PRINT AUTOMATION  •  INSTALLED") + "\n")
 		} else {
-			fmt.Printf("  2  Quiet print automation — $%s (prints $1 every 2 seconds)\n", money(game.AutomationCost))
+			b.WriteString(fmt.Sprintf("  %s  Quiet print automation  —  $%s\n", selectedStyle.Render("[2]"), money(game.AutomationCost)))
+			b.WriteString(labelStyle.Render("      Prints $1 every two seconds while the game is open.") + "\n")
 		}
-		fmt.Println("  b  Back to PRINT")
+		b.WriteString("\n  " + labelStyle.Render("[B] Return to print control") + "\n")
 	case game.TabEmail:
-		fmt.Println("\n[EMAIL]")
-		if a.state.EmailRead {
-			fmt.Println("  IT OPERATIONS — Unusual print reconciliation. Can you come by before end of day?")
-		} else {
-			fmt.Println("  e  Read new message")
-		}
-		fmt.Println("  b  Back to PRINT")
+		b.WriteString(titleStyle.Render("INTERNAL EMAIL") + "\n\n")
+		b.WriteString("  FROM: IT OPERATIONS\n")
+		b.WriteString("  SUBJECT: Print reconciliation discrepancy\n\n")
+		b.WriteString("  Unusual print reconciliation. Can you come by before end of day?\n")
+		b.WriteString(labelStyle.Render("  The sender has not explained how they found it.") + "\n")
+		b.WriteString("\n  " + labelStyle.Render("[B] Return to print control") + "\n")
 	}
+
 	if len(a.state.Events) > 0 {
 		e := a.state.Events[len(a.state.Events)-1]
-		fmt.Println("\nLATEST RECORD")
-		fmt.Printf("  %s\n", e.Text)
+		b.WriteString("\n" + lineStyle.Render(strings.Repeat("─", max(20, min(a.width-6, 100)))) + "\n")
+		b.WriteString(labelStyle.Render("LATEST RECORD") + "\n")
+		b.WriteString(e.Text + "\n")
 	}
-	fmt.Println("\nCommands: p print | s store | e email | b back | save | h help | q quit")
+	if a.message != "" {
+		b.WriteString("\n" + subtitleStyle.Render(a.message) + "\n")
+	}
+	b.WriteString("\n" + labelStyle.Render("[P] print   [S] store   [E] email   [B] back   [V] save   [H] help   [Q] quit"))
+	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 }
 
-func (a *App) help() {
-	fmt.Println("\nHelp: p prints one dollar; s opens Store; e opens Email when unlocked; b returns to PRINT; 1/2 buy Store upgrades; save writes a save; q autosaves and quits.")
+func money(cents int64) string {
+	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
 }
-
-func money(cents int64) string { return fmt.Sprintf("%d.%02d", cents/100, cents%100) }
