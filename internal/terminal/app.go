@@ -86,12 +86,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, tick()
 				}
 			}
-		case "q", "esc":
+		case "q":
 			if a.screen == screenMenu {
 				return a, tea.Quit
 			}
 			a.autosave()
 			return a, tea.Quit
+		case "esc":
+			switch a.screen {
+			case screenMenu:
+				return a, tea.Quit
+			case screenIntro:
+				a.screen = screenMenu
+			case screenGame:
+				_ = a.state.OpenTab(game.TabPrint)
+				a.message = ""
+			}
 		default:
 			if a.screen == screenGame {
 				return a, a.handleGameKey(msg.String())
