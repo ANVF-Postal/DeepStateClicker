@@ -41,7 +41,7 @@ go vet ./...
 - `h` or `?` — help
 - `q` — save and quit
 
-The app uses the terminal's alternate screen and redraws in place. The simulation advances only while the app is open; there is no offline progression.
+The app uses the terminal's alternate screen and redraws in place. Mouse clicks can select menu options, switch tabs, and activate common on-screen actions; keyboard shortcuts remain available. Mouse support depends on the terminal emulator. The simulation advances only while the app is open; there is no offline progression.
 
 ## Architecture
 
