@@ -38,10 +38,15 @@ type App struct {
 	menu int
 	message string
 	uiFrame int64
+	newsHeadline string
+	newsExpiresAt time.Time
+	newsFlashUntil time.Time
+	injectFlashUntil time.Time
 }
 
 func New(state game.State) *App {
 	state.Normalize()
+	if state.CurrentTab == game.TabStore { state.CurrentTab = game.TabPrint }
 	return &App{state: state, screen: screenMenu, width: 80, height: 24}
 }
 func (a *App) Run() error {
@@ -58,9 +63,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			return a, a.handleMouse(msg.X, msg.Y)
 		}
+		if a.screen == screenGame && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) && a.mouseOnTabRow(msg.Y) {
+			delta := 1
+			if msg.Button == tea.MouseButtonWheelUp { delta = -1 }
+			a.cycleTab(delta)
+		}
 	case tickMsg:
 		if a.screen == screenGame {
+			previousNews := a.state.NewsIndex
 			a.state.Advance(time.Time(msg))
+			if a.state.NewsIndex != previousNews { a.startNewsDispatch() }
 			return a, tick()
 		}
 	case uiPulseMsg:
@@ -130,35 +142,20 @@ func (a *App) loadGame() {
 	loaded, err := save.Read(savePath)
 	if err != nil { a.message = "No readable save found. Choose NEW OPERATION to begin."; return }
 	loaded.Normalize()
+	if loaded.CurrentTab == game.TabStore { loaded.CurrentTab = game.TabPrint }
 	a.state, a.screen, a.message = loaded, screenGame, "Operation loaded."
 }
 
 func (a *App) layout() uiLayout {
 	w, h := a.width, a.height
-	if w < 24 { w = 24 }; if h < 12 { h = 12 }
+	if w < 24 { w = 24 }
+	if h < 12 { h = 12 }
 	sideBySide := w >= 100
-	bodyWidth := max(24, w-8)
-	choiceBase := 12
-	if sideBySide { bodyWidth = max(24, w-max(28,min(36,w/3))-12); choiceBase = 6 }
-	choiceY := 0
-	messageLastY := 17
-	if h < 30 {
-		if sideBySide { messageLastY = 16 } else { messageLastY = 13 }
-		if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
-			if sideBySide { choiceY = 16 } else { choiceY = 17 }
-		}
-	} else if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
-		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
-	}
-	// The cash panel can gain a row when its values wrap at narrower widths.
-	// Measure the rendered panel instead of assuming a fixed vertical position.
-	cashHeight := lipgloss.Height(a.cashPanelView(w))
-	tabsY := 5 + cashHeight
-	panelY := tabsY + 2
+	panelY := 4
 	return uiLayout{
-		Width:w, Height:h, TabsY:tabsY, ContentY:panelY,
-		ExploitY:panelY+5, StoreCapacityY:panelY+2, StoreCalibrationY:panelY+4, StoreAutomationY:panelY+6,
-		MessageFirstY:panelY+1, MessageLastY:messageLastY-2+(panelY-11), MessageChoiceFirstY:choiceY-2+(panelY-11), TickerY:h-2,
+		Width:w, Height:h, TabsY:2, ContentY:panelY,
+		ExploitY:panelY+8, StoreCapacityY:panelY+11, StoreCalibrationY:panelY+12, StoreAutomationY:panelY+13,
+		MessageFirstY:panelY+1, MessageLastY:h-5, MessageChoiceFirstY:h-9, TickerY:h-2,
 		SideBySide:sideBySide,
 	}
 }
@@ -208,42 +205,25 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		}
 	case screenGame:
 		// The tab strip is identified by its rendered labels, not a fixed row.
-		if strings.Contains(line, "PRINT") && strings.Contains(line, "STORE") && !strings.Contains(line, "OPERATIONS") {
-			storeAt := strings.Index(line, "STORE")
+		if strings.Contains(line, "[MAIN]") || strings.Contains(line, "[MESSAGES") {
 			messagesAt := strings.Index(line, "MESSAGES")
-			switch {
-			case storeAt < 0 || x < storeAt:
-				_ = a.state.OpenTab(game.TabPrint)
-			case messagesAt >= 0 && x >= messagesAt:
+			if messagesAt >= 0 && x >= messagesAt {
 				_ = a.state.OpenTab(game.TabMessages)
-				if m := a.state.SelectedMessage(); m != nil {
-					_ = a.state.SelectMessage(m.ID, time.Now())
-				}
-			default:
-				_ = a.state.OpenTab(game.TabStore)
-			}
+				if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, time.Now()) }
+			} else { _ = a.state.OpenTab(game.TabPrint) }
 			a.message = ""
 			return nil
 		}
 
 		switch a.state.CurrentTab {
-		case game.TabPrint:
-			if strings.Contains(line, "INJECT") {
-				return a.handleGameKey("x")
-			}
-			if strings.Contains(line, "[S] Store") {
-				return a.handleGameKey("s")
-			}
-			if strings.Contains(line, "[M] Messages") {
-				return a.handleGameKey("m")
-			}
-		case game.TabStore:
+		case game.TabPrint, game.TabStore:
+			if strings.Contains(line, "INJECT") { return a.handleGameKey("x") }
 			switch {
-			case strings.Contains(line, "Lockable cash box") || strings.Contains(line, "LOCKABLE CASH BOX"):
+			case strings.Contains(line, "Lockable cash box") || strings.Contains(line, "CASH CAPACITY"):
 				return a.handleGameKey("1")
-			case strings.Contains(line, "Queue indicator calibration") || strings.Contains(line, "QUEUE INDICATOR CALIBRATION"):
+			case strings.Contains(line, "Queue indicator calibration") || strings.Contains(line, "QUEUE CALIBRATION"):
 				return a.handleGameKey("2")
-			case strings.Contains(line, "Quiet exploit automation") || strings.Contains(line, "QUIET EXPLOIT AUTOMATION"):
+			case strings.Contains(line, "Quiet exploit automation") || strings.Contains(line, "PRINT AUTOMATION"):
 				return a.handleGameKey("3")
 			}
 		case game.TabMessages:
@@ -287,26 +267,28 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	now := time.Now()
 	switch key {
 	case "p", " ", "x":
-		if err := a.state.QueueExploit(now); err != nil { a.message = err.Error() } else { a.message = "Instruction queued. The batch continues." }
+		if err := a.state.QueueExploit(now); err != nil {
+			if err == game.ErrWindowClosed { a.injectFlashUntil = now.Add(500 * time.Millisecond); a.message = "" } else { a.message = err.Error() }
+		} else { a.message = "" }
 	case "1":
-		if a.state.CurrentTab == game.TabStore {
+		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
 			if err := a.state.BuyCapacityUpgrade(now); err != nil { a.message = err.Error() } else { a.message = "Cash box installed." }
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(0, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "2":
-		if a.state.CurrentTab == game.TabStore {
+		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
 			if err := a.state.BuyWindowCalibration(now); err != nil { a.message = err.Error() } else { a.message = "Queue indicator calibration installed." }
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(1, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "3":
-		if a.state.CurrentTab == game.TabStore {
+		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
 			if err := a.state.BuyAutomation(now); err != nil { a.message = err.Error() } else { a.message = "Exploit automation enabled." }
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(2, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
-	case "s": _ = a.state.OpenTab(game.TabStore); a.message = ""
+	case "s": _ = a.state.OpenTab(game.TabPrint); a.message = ""
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -317,7 +299,7 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	case "b", "esc": _ = a.state.OpenTab(game.TabPrint); a.message = ""
 	case "v":
 		if err := save.Write(savePath, a.state); err != nil { a.message = "Save failed: "+err.Error() } else { a.message = "Saved to "+savePath }
-	case "h", "?": a.message = "X/P exploit  •  S store  •  M messages  •  1–3 reply/upgrade  •  I ignore  •  V save  •  Q quit"
+	case "h", "?": a.message = "X/P inject  •  MAIN: 1–3 upgrades  •  M messages  •  1–3 reply  •  I ignore  •  V save  •  Q quit"
 	case "q": a.autosave(); return tea.Quit
 	}
 	return nil
@@ -385,46 +367,39 @@ func (a *App) introView() string {
 func (a *App) gameView() string {
 	l := a.layout()
 	var b strings.Builder
-	header := titleStyle.Render("DEEP STATE CLICKER")+"  "+labelStyle.Render("FEDERAL RESERVE / INTERNAL TERMINAL")
-	b.WriteString(header+"\n")
-	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20,l.Width-4)))+"\n")
-	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk))+"\n")
-	b.WriteString("\n")
-	b.WriteString(a.cashPanelView(l.Width)+"\n")
-	tabs := []game.Tab{game.TabPrint,game.TabStore}
-	if a.state.EmailUnlocked { tabs = append(tabs,game.TabMessages) }
+	b.WriteString(a.newsStripView(max(12, l.Width-4))+"\n")
+	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
+	tabs := []game.Tab{game.TabPrint}
+	if a.state.EmailUnlocked { tabs = append(tabs, game.TabMessages) }
 	var labels []string
+	unread := unreadCount(a.state.Messages)
+	urgent := a.state.ITSuspicion >= 4 || (a.state.PendingReplyTicks > 0 && a.state.PendingReplyTicks <= 2)
 	for _, tab := range tabs {
-		label := string(tab)
-		unread := unreadCount(a.state.Messages)
-		urgent := a.state.ITSuspicion >= 4 || (a.state.PendingReplyTicks > 0 && a.state.PendingReplyTicks <= 2)
-		if tab == game.TabMessages && unread > 0 {
-			label += fmt.Sprintf(" !%d", unread)
-			if urgent {
-				if a.uiFrame%5 < 3 { labels = append(labels, dangerStyle.Render("["+label+"]")) } else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
-			} else if a.uiFrame%5 < 3 {
-				labels = append(labels, selectedStyle.Render("["+label+"]"))
-			} else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
-		} else if tab == a.state.CurrentTab { labels=append(labels,selectedStyle.Render("["+label+"]")) } else { labels=append(labels,labelStyle.Render(" "+label+" ")) }
+		label := "MAIN"
+		if tab == game.TabMessages { label = "MESSAGES"; if unread > 0 { label += fmt.Sprintf(" !%d", unread) } }
+		rendered := "["+label+"]"
+		if tab == a.state.CurrentTab { labels = append(labels, selectedStyle.Render(rendered))
+		} else if tab == game.TabMessages && unread > 0 && urgent {
+			if a.uiFrame%5 < 3 { labels = append(labels, dangerStyle.Render(rendered)) } else { labels = append(labels, labelStyle.Render(rendered)) }
+		} else if tab == game.TabMessages && unread > 0 && a.uiFrame%5 < 3 { labels = append(labels, selectedStyle.Render(rendered))
+		} else { labels = append(labels, labelStyle.Render(rendered)) }
 	}
-	b.WriteString("\n"+strings.Join(labels,"     ")+"\n")
-	b.WriteString(lineStyle.Render(strings.Repeat("─",max(20,l.Width-4)))+"\n")
-
+	tabLine := strings.Join(labels, "   ")
+	if lipgloss.Width(tabLine) > max(12, l.Width-8) { tabLine = truncate(tabLine, max(8, l.Width-10))+" >" }
+	b.WriteString(tabLine+"\n")
+	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
 	var panel string
 	switch a.state.CurrentTab {
-	case game.TabPrint: panel = a.printPanel(l)
-	case game.TabStore: panel = a.storePanel(l)
+	case game.TabPrint, game.TabStore: panel = a.printPanel(l)
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
-	panelLines := max(4, l.TickerY-l.ContentY-2)
+	panelLines := max(4, l.TickerY-l.ContentY-4)
 	if a.message != "" { panelLines-- }
 	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
-	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message,max(12,l.Width-4)))+"\n") }
-	for strings.Count(b.String(),"\n") < l.TickerY-1 { b.WriteString("\n") }
-	ticker := tickerText(a.state, max(12,l.Width-4), a.uiFrame)
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#B8A46E")).Width(max(12,l.Width-4)).MaxHeight(1).Render(ticker)+"\n")
-	b.WriteString(labelStyle.Render("X/P exploit  S store  M messages  1–3 choose  I ignore  V save  H help  Q quit"))
+	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message, max(12, l.Width-4)))+"\n") }
+	for strings.Count(b.String(), "\n") < l.TickerY-1 { b.WriteString("\n") }
+	b.WriteString(labelStyle.Render("X/P inject  1–3 upgrades/replies  M messages  I ignore  V save  H help  Q quit"))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
 }
 
@@ -438,27 +413,40 @@ func (a *App) cashPanelView(width int) string {
 
 func (a *App) printPanel(l uiLayout) string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("PRINT OPERATIONS")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d",a.state.Batch.Number))+"\n")
-	b.WriteString(labelStyle.Render("QUEUE STATUS  "))
-	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY")) } else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")) }
+	b.WriteString(titleStyle.Render("MAIN  /  PRINT OPERATIONS")+"   ")
+	if a.state.Status == game.RunFederal || a.state.Status == game.RunSandbox { b.WriteString(okStyle.Render("SYSTEM READY")) } else { b.WriteString(dangerStyle.Render("SYSTEM OFFLINE")) }
 	b.WriteString("\n")
-	width := max(10,min(l.Width-12,54))
+	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk))+"\n")
+	b.WriteString(labelStyle.Render("CASH ON HAND  "))
+	b.WriteString(lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand)))
+	b.WriteString(labelStyle.Render(" / CAPACITY $"+money(a.state.CashCapacity))+"\n")
+	b.WriteString(labelStyle.Render("TOTAL PRINTED  $"+money(a.state.TotalPrinted)+"    EST. NET WORTH  $"+money(a.state.EstimatedNetWorth))+"\n\n")
+	b.WriteString(titleStyle.Render("PRINT WINDOW")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d", a.state.Batch.Number))+"\n")
+	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY OPEN")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n")
+	} else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n") }
+	width := max(10, min(l.Width-12, 54))
 	progress := a.state.Batch.Progress*width/game.BatchCycleTicks
-	if progress < 0 { progress=0 }; if progress > width { progress=width }
-	bar := strings.Repeat("━",progress)+strings.Repeat("─",width-progress)
-	marker := "▶"
-	if a.state.Batch.WindowOpen { marker = "◆" }
+	if progress < 0 { progress = 0 }; if progress > width { progress = width }
+	bar := strings.Repeat("━", progress)+strings.Repeat("─", width-progress)
+	marker := "▶"; if a.state.Batch.WindowOpen { marker = "◆" }
 	if progress < width { runes := []rune(bar); runes[progress] = []rune(marker)[0]; bar = string(runes) }
 	b.WriteString("  "+lineStyle.Render(bar)+"\n")
-	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%",a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n\n")
-	if a.state.Batch.WindowOpen {
-		b.WriteString("  "+okStyle.Render("[X]  INJECT")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d",a.state.Batch.QueuedDollars))+"\n")
-	} else {
-		b.WriteString("  "+labelStyle.Render("[X]  INJECT")+"   "+labelStyle.Render("—") +"\n")
+	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%", a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n")
+	injectStyle := labelStyle
+	if a.state.Batch.WindowOpen { injectStyle = okStyle }
+	if time.Now().Before(a.injectFlashUntil) { injectStyle = dangerStyle.Bold(true) }
+	b.WriteString("  "+injectStyle.Render("[X]  INJECT")+"\n")
+	outcome := strings.ToLower(a.state.Batch.LastOutcome)
+	if a.state.Batch.LastOutcome != "" && !strings.Contains(outcome, "queue moved on") && !strings.Contains(outcome, "no instruction was sent") {
+		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
 	}
-	b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome,max(12,l.Width-8)))+"\n")
-	b.WriteString("  "+selectedStyle.Render("[S] Store")+"   ")
-	if a.state.EmailUnlocked { b.WriteString(selectedStyle.Render("[M] Messages")) }
+	b.WriteString("\n"+titleStyle.Render("UPGRADES")+"\n")
+	if a.state.Upgrades.ExpandedCashCapacity { b.WriteString(okStyle.Render("[1] CASH CAPACITY — INSTALLED")+"\n")
+	} else { b.WriteString(selectedStyle.Render("[1]")+" "+labelStyle.Render("Lockable cash box — $"+money(game.CapacityUpgradeCost))+"\n") }
+	if a.state.Upgrades.WindowCalibration { b.WriteString(okStyle.Render("[2] QUEUE CALIBRATION — INSTALLED")+"\n")
+	} else { b.WriteString(selectedStyle.Render("[2]")+" "+labelStyle.Render("Queue indicator calibration — $15.00")+"\n") }
+	if a.state.Upgrades.PrintAutomation { b.WriteString(okStyle.Render("[3] PRINT AUTOMATION — INSTALLED")+"\n")
+	} else { b.WriteString(selectedStyle.Render("[3]")+" "+labelStyle.Render("Quiet exploit automation — $"+money(game.AutomationCost))+"\n") }
 	return b.String()
 }
 
@@ -572,6 +560,57 @@ func (a *App) messagesPanel(l uiLayout) string {
 		b.WriteString(labelStyle.Render("[I] Leave unanswered")+"\n")
 	} else if a.state.PendingReplyTicks>0 { b.WriteString("\n"+labelStyle.Render("Reply sent. Waiting for a response...")+"\n") }
 	return b.String()
+}
+
+func (a *App) startNewsDispatch() {
+	if a.state.NewsIndex < 0 || a.state.NewsIndex >= len(game.NewsHeadlines) { return }
+	a.newsHeadline = game.NewsHeadlines[a.state.NewsIndex]
+	now := time.Now()
+	a.newsFlashUntil = now.Add(900*time.Millisecond)
+	a.newsExpiresAt = now.Add(7*time.Second)
+}
+
+func (a *App) newsStripView(width int) string {
+	now := time.Now()
+	if a.newsHeadline == "" || !now.Before(a.newsExpiresAt) {
+		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
+	}
+	if now.Before(a.newsFlashUntil) {
+		color := amber
+		headline := strings.ToLower(a.newsHeadline)
+		switch {
+		case strings.Contains(headline, "emergency") || strings.Contains(headline, "erodes") || strings.Contains(headline, "families") || strings.Contains(headline, "shortages") || strings.Contains(headline, "extraordinary"):
+			color = red
+		case strings.Contains(headline, "approves") || strings.Contains(headline, "funding") || strings.Contains(headline, "eases") || strings.Contains(headline, "improves"):
+			color = green
+		}
+		if a.uiFrame%4 < 2 { return lipgloss.NewStyle().Foreground(color).Bold(true).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---") }
+		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
+	}
+	runes := []rune(a.newsHeadline)
+	if len(runes) <= width { return lipgloss.NewStyle().Foreground(ink).Width(width).Render(a.newsHeadline) }
+	offset := int(a.uiFrame/2) % max(1, len(runes))
+	loop := append(append([]rune{}, runes...), append([]rune("   •   "), runes...)...)
+	start := offset % max(1, len(loop))
+	visible := string(loop[start:])
+	if len([]rune(visible)) > width { visible = string([]rune(visible)[:width]) }
+	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(visible)
+}
+
+func (a *App) mouseOnTabRow(y int) bool {
+	if a.screen != screenMenu { y++ }
+	lines := plainViewLines(a.View())
+	return y >= 0 && y < len(lines) && (strings.Contains(lines[y], "[MAIN]") || strings.Contains(lines[y], "[MESSAGES"))
+}
+
+func (a *App) cycleTab(delta int) {
+	tabs := []game.Tab{game.TabPrint}
+	if a.state.EmailUnlocked { tabs = append(tabs, game.TabMessages) }
+	current := 0
+	for i, tab := range tabs { if tab == a.state.CurrentTab { current = i; break } }
+	current = (current+delta+len(tabs))%len(tabs)
+	_ = a.state.OpenTab(tabs[current])
+	a.message = ""
 }
 
 func fitLines(s string, maxLines int) string {
