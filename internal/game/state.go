@@ -145,12 +145,19 @@ func NewState(now time.Time) State {
 // Normalize supplies defaults when loading saves created before the queue/inbox update.
 func (s *State) Normalize() {
 	if s.CurrentTab == "EMAIL" { s.CurrentTab = TabMessages }
+	if s.CurrentTab == "" { s.CurrentTab = TabPrint }
 	if s.CashCapacity == 0 { s.CashCapacity = InitialCashCapacity }
-	if s.Batch.Number == 0 { s.Batch.Number = 1 }
-	if s.ITPatience == 0 { s.ITPatience = 3 }
+	if s.Batch.Number == 0 {
+		s.Batch.Number = s.TotalPrinted/PrintAmount + 1
+		s.Batch.Completed = s.Batch.Number - 1
+	}
+	if s.ITPatience == 0 && len(s.Messages) == 0 { s.ITPatience = 3 }
 	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
 	if len(s.Messages) == 0 && s.EmailUnlocked {
 		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
+		if s.EmailRead {
+			if m := s.SelectedMessage(); m != nil { m.Read = true }
+		}
 	}
 }
 
