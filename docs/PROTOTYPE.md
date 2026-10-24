@@ -1,28 +1,41 @@
-# Prototype 0.1 — Design Contract
+# Prototype 0.3 — The Queue and the Inbox
 
 ## Player fantasy
-A Federal Reserve employee discovers a printing anomaly. The interface initially feels like a plain internal workstation. The player can print a few extra physical dollars, but their ability to hold, move, and conceal cash is limited. Choices leave history; money can buy time, not erase consequences.
 
-## Prototype loop
-1. Left-anchored title/menu and short intro sequence.
-2. PRINT screen: cash-on-hand counter, $1 print action, $1,000 starting capacity.
-3. STORE: one capacity upgrade and one automation upgrade.
-4. EMAIL: first IT employee message, unlocked by early play.
-5. Active-only simulation ticks, a simple risk score, and a persistent event log.
-6. Versioned save/load plumbing, with run status separated from ordinary game state.
+A Federal Reserve employee has discovered an anomaly in a printing process. The exploit is already set up. The player does not start the machine; they watch its ordinary batch queue and occasionally intervene when a brief opportunity appears. Every dollar leaves a mark.
 
-## Architecture rules
-- The simulation must not depend on terminal UI, input, or save-file details.
-- Game rules are expressed as methods over explicit state and are covered by unit tests.
-- All money is integer cents; no floating-point currency.
-- Cash-on-hand capacity is separate from future storage locations and assets.
-- Save data is versioned. Save writes use a temporary file plus rename.
-- Federal eligibility is explicit state. Death and retirement will be modeled as irreversible transitions; this prototype only lays down the status fields and save contract.
-- No offline progress. Ticks occur only while the application is running.
-- Randomness must eventually be injected/seeded so story and simulation tests remain reproducible.
+## Core loop
 
-## Future-compatible event model
-Major interventions (including geopolitical crises) should later be authored as game events with prerequisites, cost, uncertain outcomes, duration, and persistent consequences. The prototype does not implement real-world operational instructions or detailed mechanics for staging attacks. Its event system is intended to support abstract fictional consequences and moral stakes.
+1. The title screen leads to a short preamble establishing the anomaly and the already-prepared exploit.
+2. A batch progresses through a roughly one-minute queue cycle while the application is open. The exploit window appears early in the cycle.
+3. A brief visual opportunity appears inside that cycle. The player may queue one or more extra dollar instructions while the window is open.
+4. The batch completes later. Only then does the cash-on-hand balance and total printed amount change.
+5. A missed opportunity is not a failure screen; the ordinary queue continues and another batch follows.
+6. Store upgrades expand physical cash capacity, make the opportunity easier to recognize, or eventually automate the exploit.
+7. The MESSAGES tab unlocks an IT Operations thread. Structured messages have sender, address, subject, timestamp, body, read status, and explicit reply choices.
+8. Replies have randomized delays measured in active simulation ticks. The character's patience and suspicion persist and influence later wording.
+9. The world-news ticker progresses from routine economic coverage to more serious signs of economic stress.
 
-## Deliberate non-goals for 0.1
-No crypto, casino, warehouses, assassination resolution, world map, audio, custom bitmap art, external services, or sophisticated anti-tamper save system. Those features should be designed after the core loop and state transitions are tested.
+## Interface contract
+
+- The PRINT screen is an operational dashboard, not a standalone clicker button.
+- Cash on hand, cash capacity, total printed, and estimated net worth are distinct fields. Estimated net worth is not spendable.
+- A single shared layout calculation determines terminal dimensions and the corresponding mouse hit regions.
+- Wide terminals place the inbox and reading pane side by side. Narrow terminals stack them.
+- The news ticker is a single clipped line at the bottom.
+- Tabs draw attention only when something needs the player's attention. Ordinary unread messages pulse amber; urgent threat states can pulse red.
+- The exploit window is communicated visually, not through explanatory tutorial text.
+- The queue keeps moving while the player reads messages. Timers pause when the application is closed.
+
+## Simulation architecture
+
+- The game model owns the batch phase, progress, queued instructions, completion, money, risk, character state, and message delays.
+- The terminal layer only renders state and dispatches player actions.
+- Random state is stored in the game state so that saves preserve the random sequence and tests can start from a known seed.
+- All money uses integer cents.
+- Save fields are additive for compatibility with the early prototype. Old saves are normalized when loaded.
+- No offline progression.
+
+## Deliberate non-goals for 0.3
+
+No warehouses, crypto, casino, world map, sound effects, custom bitmap artwork, geopolitical intervention system, assassination resolution, or sophisticated anti-tamper save system. The current IT thread is a foundation for more complex branching conversations, not the final narrative. The preamble text is placeholder copy until the author supplies the definitive story and fade timing.

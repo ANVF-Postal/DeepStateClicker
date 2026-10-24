@@ -12,13 +12,19 @@ const (
 	CapacityUpgradeCost int64 = 2_500   // $25.00
 	CapacityUpgradeTo   int64 = 250_000 // $2,500.00
 	AutomationCost      int64 = 5_000   // $50.00
+
+	BatchCycleTicks = 60
+	ExploitWindowStart = 8
+	ExploitWindowEnd = 10
 )
 
 var (
 	ErrCapacityFull = errors.New("cash-on-hand capacity reached")
 	ErrInsufficient = errors.New("not enough cash on hand")
 	ErrUpgradeOwned = errors.New("upgrade already purchased")
-	ErrNoEmail      = errors.New("no new email")
+	ErrNoEmail      = errors.New("no message selected")
+	ErrWindowClosed = errors.New("the queue has moved on")
+	ErrNoPendingReply = errors.New("there is no reply to send")
 )
 
 type RunStatus string
@@ -35,88 +41,150 @@ type Tab string
 const (
 	TabPrint Tab = "PRINT"
 	TabStore Tab = "STORE"
-	TabEmail Tab = "EMAIL"
+	TabMessages Tab = "MESSAGES"
+	TabEmail Tab = TabMessages // compatibility with the early prototype
 )
 
 type Event struct {
-	AtTick int64     `json:"at_tick"`
-	Kind   string    `json:"kind"`
-	Text   string    `json:"text"`
+	AtTick int64 `json:"at_tick"`
+	Kind   string `json:"kind"`
+	Text   string `json:"text"`
 	At     time.Time `json:"at,omitempty"`
+}
+
+type Message struct {
+	ID string `json:"id"`
+	Sender string `json:"sender"`
+	Address string `json:"address"`
+	To string `json:"to"`
+	Subject string `json:"subject"`
+	Body string `json:"body"`
+	AtTick int64 `json:"at_tick"`
+	Read bool `json:"read"`
+	Kind string `json:"kind"`
+	Choices []string `json:"choices,omitempty"`
+}
+
+type BatchState struct {
+	Number int64 `json:"number"`
+	Progress int `json:"progress_ticks"`
+	QueuedDollars int `json:"queued_dollars"`
+	Completed int64 `json:"completed_batches"`
+	LastOutcome string `json:"last_outcome"`
+	WindowOpen bool `json:"window_open"`
+	WindowMissed bool `json:"window_missed"`
 }
 
 type UpgradeState struct {
 	ExpandedCashCapacity bool `json:"expanded_cash_capacity"`
-	PrintAutomation      bool `json:"print_automation"`
+	PrintAutomation bool `json:"print_automation"`
+	WindowCalibration bool `json:"window_calibration"`
 }
 
 type State struct {
-	SchemaVersion int          `json:"schema_version"`
-	RunID         string       `json:"run_id"`
-	Status        RunStatus    `json:"status"`
-	CurrentTab    Tab          `json:"current_tab"`
-	CashOnHand    int64        `json:"cash_on_hand_cents"`
-	CashCapacity  int64        `json:"cash_capacity_cents"`
-	TotalPrinted  int64        `json:"total_printed_cents"`
-	Risk          int          `json:"risk"`
-	Tick          int64        `json:"tick"`
-	EmailUnlocked bool         `json:"email_unlocked"`
-	EmailRead     bool         `json:"email_read"`
-	Upgrades      UpgradeState `json:"upgrades"`
-	Events        []Event      `json:"events"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	SchemaVersion int `json:"schema_version"`
+	RunID string `json:"run_id"`
+	Status RunStatus `json:"status"`
+	CurrentTab Tab `json:"current_tab"`
+	CashOnHand int64 `json:"cash_on_hand_cents"`
+	CashCapacity int64 `json:"cash_capacity_cents"`
+	TotalPrinted int64 `json:"total_printed_cents"`
+	EstimatedNetWorth int64 `json:"estimated_net_worth_cents"`
+	Risk int `json:"risk"`
+	Tick int64 `json:"tick"`
+	EmailUnlocked bool `json:"email_unlocked"`
+	EmailRead bool `json:"email_read"`
+	Messages []Message `json:"messages,omitempty"`
+	SelectedMessageID string `json:"selected_message_id,omitempty"`
+	PendingReplyTicks int `json:"pending_reply_ticks,omitempty"`
+	ITPatience int `json:"it_patience"`
+	ITSuspicion int `json:"it_suspicion"`
+	ITReplyCount int `json:"it_reply_count"`
+	Batch BatchState `json:"batch"`
+	Upgrades UpgradeState `json:"upgrades"`
+	NewsIndex int `json:"news_index"`
+	Events []Event `json:"events"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	RandomState uint64 `json:"random_state"`
+}
+
+var NewsHeadlines = []string{
+	"WASHINGTON: Budget committee postpones routine hearing",
+	"NEW YORK: Regional manufacturers report a modest rise in input costs",
+	"CHICAGO: Transit authority approves maintenance funding",
+	"MARKETS: Treasury yields edge higher in quiet trading",
+	"ECONOMY: Small businesses report longer waits for credit",
+	"CONSUMER PRICES: Household essentials rise for a third consecutive month",
+	"SUPPLY WATCH: Several regional distributors report intermittent shortages",
+	"PUBLIC SERVICES: Municipal budgets face renewed pressure from rising costs",
+	"MARKETS: Currency volatility spreads beyond emerging markets",
+	"WASHINGTON: Emergency session called as confidence in price stability erodes",
+	"REPORT: Families delay prescriptions and utility payments as costs climb",
+	"GLOBAL OUTLOOK: Several governments announce extraordinary economic measures",
 }
 
 func NewState(now time.Time) State {
-	return State{
+	s := State{
 		SchemaVersion: 1,
-		RunID:         fmt.Sprintf("DSC-%d", now.UnixNano()),
-		Status:        RunFederal,
-		CurrentTab:    TabPrint,
-		CashCapacity:  InitialCashCapacity,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		Events: []Event{{
-			AtTick: 0,
-			Kind:   "discovery",
-			Text:   "The count is off by one dollar. You check it again. The number does not change.",
-			At:     now,
-		}},
+		RunID: fmt.Sprintf("DSC-%d", now.UnixNano()),
+		Status: RunFederal,
+		CurrentTab: TabPrint,
+		CashCapacity: InitialCashCapacity,
+		ITPatience: 3,
+		RandomState: uint64(now.UnixNano()) ^ 0x9e3779b97f4a7c15,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Batch: BatchState{Number: 1, Progress: 0, LastOutcome: "Routine batch cycle active."},
+		Events: []Event{{AtTick: 0, Kind: "discovery", Text: "The discrepancy is real. The exploit is already in place; the queue is moving.", At: now}},
+	}
+	if s.RandomState == 0 { s.RandomState = 1 }
+	return s
+}
+
+// Normalize supplies defaults when loading saves created before the queue/inbox update.
+func (s *State) Normalize() {
+	if s.CurrentTab == "EMAIL" { s.CurrentTab = TabMessages }
+	if s.CurrentTab == "" { s.CurrentTab = TabPrint }
+	if s.CashCapacity == 0 { s.CashCapacity = InitialCashCapacity }
+	if s.Batch.Number == 0 {
+		s.Batch.Number = s.TotalPrinted/PrintAmount + 1
+		s.Batch.Completed = s.Batch.Number - 1
+	}
+	if s.ITPatience == 0 && len(s.Messages) == 0 { s.ITPatience = 3 }
+	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
+	if len(s.Messages) == 0 && s.EmailUnlocked {
+		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
+		if s.EmailRead {
+			if m := s.SelectedMessage(); m != nil { m.Read = true }
+		}
 	}
 }
 
 func (s *State) PrintOneDollar(now time.Time) error {
-	if s.Status != RunFederal && s.Status != RunSandbox {
-		return errors.New("this run is no longer active")
-	}
-	if s.CashOnHand+PrintAmount > s.CashCapacity {
+	// Kept as a compatibility wrapper for early callers. New printing is batch-based.
+	if !s.Batch.WindowOpen { return ErrWindowClosed }
+	return s.QueueExploit(now)
+}
+
+func (s *State) QueueExploit(now time.Time) error {
+	if s.Status != RunFederal && s.Status != RunSandbox { return errors.New("this run is no longer active") }
+	if !s.Batch.WindowOpen { return ErrWindowClosed }
+	if s.CashOnHand+int64(s.Batch.QueuedDollars+1)*PrintAmount > s.CashCapacity {
 		s.Risk = clamp(s.Risk+1, 0, 100)
-		s.addEvent("overflow_attempt", "The drawer is full. You leave the print command alone.", now)
+		s.addEvent("overflow_attempt", "The cash drawer is full. You let the opportunity pass.", now)
 		s.UpdatedAt = now
 		return ErrCapacityFull
 	}
-	s.CashOnHand += PrintAmount
-	s.TotalPrinted += PrintAmount
-	if s.TotalPrinted >= 1_000 && !s.EmailUnlocked {
-		s.EmailUnlocked = true
-		s.addEvent("email_unlocked", "A new message has arrived in your internal inbox.", now)
-	}
-	// The first few dollars are quiet. Accumulation slowly makes the anomaly harder to ignore.
-	if s.TotalPrinted >= 5_000 && s.TotalPrinted%2_500 == 0 {
-		s.Risk = clamp(s.Risk+1, 0, 100)
-	}
+	s.Batch.QueuedDollars++
+	s.Batch.LastOutcome = "An extra print instruction is queued for the active batch."
 	s.UpdatedAt = now
 	return nil
 }
 
 func (s *State) BuyCapacityUpgrade(now time.Time) error {
-	if s.Upgrades.ExpandedCashCapacity {
-		return ErrUpgradeOwned
-	}
-	if s.CashOnHand < CapacityUpgradeCost {
-		return ErrInsufficient
-	}
+	if s.Upgrades.ExpandedCashCapacity { return ErrUpgradeOwned }
+	if s.CashOnHand < CapacityUpgradeCost { return ErrInsufficient }
 	s.CashOnHand -= CapacityUpgradeCost
 	s.CashCapacity = CapacityUpgradeTo
 	s.Upgrades.ExpandedCashCapacity = true
@@ -126,66 +194,206 @@ func (s *State) BuyCapacityUpgrade(now time.Time) error {
 }
 
 func (s *State) BuyAutomation(now time.Time) error {
-	if s.Upgrades.PrintAutomation {
-		return ErrUpgradeOwned
-	}
-	if s.CashOnHand < AutomationCost {
-		return ErrInsufficient
-	}
+	if s.Upgrades.PrintAutomation { return ErrUpgradeOwned }
+	if s.CashOnHand < AutomationCost { return ErrInsufficient }
 	s.CashOnHand -= AutomationCost
 	s.Upgrades.PrintAutomation = true
-	s.addEvent("upgrade", "A quiet modification lets the machine run without your hand on the button.", now)
+	s.addEvent("upgrade", "A quiet modification lets the exploit queue itself during future opportunities.", now)
 	s.UpdatedAt = now
 	return nil
 }
 
-// Advance advances one simulation second. It is called only by the active app loop.
+func (s *State) BuyWindowCalibration(now time.Time) error {
+	if s.Upgrades.WindowCalibration { return ErrUpgradeOwned }
+	if s.CashOnHand < 1_500 { return ErrInsufficient }
+	s.CashOnHand -= 1_500
+	s.Upgrades.WindowCalibration = true
+	s.addEvent("upgrade", "A subtle calibration makes the queue's brief opportunity easier to recognize.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+// Advance progresses only while the application is open. Each call represents one active second.
 func (s *State) Advance(now time.Time) {
-	if s.Status != RunFederal && s.Status != RunSandbox {
-		return
-	}
+	if s.Status != RunFederal && s.Status != RunSandbox { return }
 	s.Tick++
-	if s.Upgrades.PrintAutomation && s.Tick%2 == 0 && s.CashOnHand+PrintAmount <= s.CashCapacity {
-		s.CashOnHand += PrintAmount
-		s.TotalPrinted += PrintAmount
+	s.Batch.Progress++
+	s.Batch.WindowOpen = false
+	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
+	// Calibration improves recognition, but only adds a very small amount of time.
+	if s.Upgrades.WindowCalibration { windowEnd++ }
+	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
+		s.Batch.WindowOpen = true
+		if s.Upgrades.PrintAutomation && s.Batch.QueuedDollars == 0 && s.CashOnHand+PrintAmount <= s.CashCapacity {
+			s.Batch.QueuedDollars = 1
+			s.Batch.LastOutcome = "The calibrated exploit queued an instruction automatically."
+		}
 	}
-	if s.Tick%30 == 0 {
-		s.Risk = clamp(s.Risk+1, 0, 100)
+	if s.Batch.Progress == windowEnd+1 && s.Batch.QueuedDollars == 0 && !s.Batch.WindowMissed {
+		s.Batch.WindowMissed = true
+		s.Batch.LastOutcome = "The queue moved on. No instruction was sent."
 	}
+	if s.Batch.Progress >= BatchCycleTicks {
+		if s.Batch.QueuedDollars > 0 {
+			amount := int64(s.Batch.QueuedDollars) * PrintAmount
+			if s.CashOnHand+amount <= s.CashCapacity {
+				s.CashOnHand += amount
+				s.TotalPrinted += amount
+				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered cash on hand.", s.Batch.Number, moneyString(amount))
+				s.addEvent("batch_complete", s.Batch.LastOutcome, now)
+			} else {
+				s.Risk = clamp(s.Risk+2, 0, 100)
+				s.Batch.LastOutcome = "Batch completed, but the excess cash had nowhere safe to go."
+				s.addEvent("overflow", s.Batch.LastOutcome, now)
+			}
+		} else {
+			s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. No extra instruction was sent.", s.Batch.Number)
+		}
+		s.Batch.Completed++
+		s.Batch.Number++
+		s.Batch.Progress = 0
+		s.Batch.QueuedDollars = 0
+		s.Batch.WindowOpen = false
+		s.Batch.WindowMissed = false
+	}
+	if s.TotalPrinted >= 1_000 && !s.EmailUnlocked {
+		s.EmailUnlocked = true
+		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
+		s.addEvent("message_received", "A new message has arrived in your internal inbox.", now)
+	}
+	if s.Tick%30 == 0 { s.Risk = clamp(s.Risk+1, 0, 100) }
+	s.advanceMail(now)
+	// Net worth is an estimate, not spendable cash.
+	// No assets exist yet, so net worth is exactly the cash currently held.
+	s.EstimatedNetWorth = s.CashOnHand
+	if s.Tick%75 == 0 && s.NewsIndex < len(NewsHeadlines)-1 { s.NewsIndex++ }
 	s.UpdatedAt = now
 }
 
 func (s *State) OpenTab(tab Tab) error {
-	if tab == TabEmail && !s.EmailUnlocked {
-		return errors.New("EMAIL is not available yet")
-	}
-	if tab != TabPrint && tab != TabStore && tab != TabEmail {
-		return errors.New("unknown tab")
-	}
+	if tab == TabMessages && !s.EmailUnlocked { return errors.New("MESSAGES is not available yet") }
+	if tab != TabPrint && tab != TabStore && tab != TabMessages { return errors.New("unknown tab") }
 	s.CurrentTab = tab
 	return nil
 }
 
 func (s *State) ReadEmail(now time.Time) error {
-	if !s.EmailUnlocked || s.EmailRead {
-		return ErrNoEmail
-	}
+	m := s.SelectedMessage()
+	if m == nil { return ErrNoEmail }
+	m.Read = true
 	s.EmailRead = true
-	s.addEvent("email_read", "IT OPERATIONS — Unusual print reconciliation. Can you come by before end of day?", now)
+	s.addEvent("message_read", "Opened message: "+m.Subject, now)
 	s.UpdatedAt = now
 	return nil
+}
+
+func (s *State) SelectedMessage() *Message {
+	if len(s.Messages) == 0 { return nil }
+	for i := range s.Messages {
+		if s.Messages[i].ID == s.SelectedMessageID { return &s.Messages[i] }
+	}
+	return &s.Messages[len(s.Messages)-1]
+}
+
+func (s *State) SelectMessage(id string, now time.Time) error {
+	for i := range s.Messages {
+		if s.Messages[i].ID == id {
+			s.SelectedMessageID = id
+			s.Messages[i].Read = true
+			s.UpdatedAt = now
+			return nil
+		}
+	}
+	return ErrNoEmail
+}
+
+func (s *State) ReplyToSelected(choice int, now time.Time) error {
+	m := s.SelectedMessage()
+	if m == nil || m.Kind != "it" || len(m.Choices) == 0 { return ErrNoPendingReply }
+	if choice < 0 || choice >= len(m.Choices) { return errors.New("invalid reply choice") }
+	if s.PendingReplyTicks > 0 { return errors.New("a reply is already pending") }
+	reply := m.Choices[choice]
+	s.ITReplyCount++
+	switch choice {
+	case 0:
+		s.ITPatience = clamp(s.ITPatience-1, 0, 5)
+		s.ITSuspicion = clamp(s.ITSuspicion+1, 0, 10)
+	case 1:
+		s.ITSuspicion = clamp(s.ITSuspicion-1, 0, 10)
+		s.ITPatience = clamp(s.ITPatience+1, 0, 5)
+	case 2:
+		s.ITPatience = clamp(s.ITPatience-1, 0, 5)
+		s.ITSuspicion = clamp(s.ITSuspicion+2, 0, 10)
+	}
+	m.Body += "\n\nYOU ("+now.Format("15:04")+")\n"+reply
+	m.Choices = nil
+	s.PendingReplyTicks = 3 + s.randomInt(7) // 3–9 active seconds, never offline
+	s.addEvent("message_sent", "You replied to IT Operations. The next message may arrive sooner than you'd like.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+func (s *State) IgnoreSelectedMessage(now time.Time) error {
+	m := s.SelectedMessage()
+	if m == nil { return ErrNoEmail }
+	if m.Kind == "it" {
+		s.ITPatience = clamp(s.ITPatience-1, 0, 5)
+		s.ITSuspicion = clamp(s.ITSuspicion+1, 0, 10)
+		s.addEvent("message_ignored", "The IT message remains unanswered. The discrepancy remains.", now)
+	}
+	s.UpdatedAt = now
+	return nil
+}
+
+func (s *State) advanceMail(now time.Time) {
+	if s.PendingReplyTicks <= 0 { return }
+	s.PendingReplyTicks--
+	if s.PendingReplyTicks > 0 { return }
+	s.ITReplyCount++
+	subject := "RE: Print reconciliation discrepancy"
+	body := "I checked the batch history again. The mismatch is still there. I'd rather resolve this quietly, but I need something I can put in my notes."
+	choices := []string{"I found a routine counting issue and will document it.", "Let's review the underlying records together.", "I don't have anything else to add."}
+	if s.ITSuspicion >= 4 || s.ITReplyCount >= 3 {
+		subject = "RE: Reconciliation — follow-up required"
+		body = "I've compared the records against the original batch summaries. This isn't the first time the numbers have diverged. I need a clear explanation, and I'm keeping a copy of the discrepancy notes."
+		choices = []string{"I'll help you reconcile the records.", "The process is more complicated than it looks.", "You should close this out without escalating it."}
+	}
+	if s.ITPatience <= 1 {
+		body += "\n\nPlease respond today. I can't leave this open indefinitely."
+	}
+	s.addITMessage(subject, body, choices)
+	s.addEvent("message_received", "A reply has arrived from IT Operations.", now)
+}
+
+func (s *State) addITMessage(subject, body string, choices []string) {
+	id := fmt.Sprintf("IT-%03d", len(s.Messages)+1)
+	s.Messages = append(s.Messages, Message{
+		ID: id, Sender: "Daniel Mercer — IT Operations", Address: "daniel.mercer@frb.internal",
+		To: "You", Subject: subject, Body: body, AtTick: s.Tick, Kind: "it", Choices: choices,
+	})
+	s.SelectedMessageID = id
+	s.EmailUnlocked = true
+}
+
+func (s *State) randomInt(n int) int {
+	if n <= 1 { return 0 }
+	x := s.RandomState
+	x ^= x << 13
+	x ^= x >> 7
+	x ^= x << 17
+	if x == 0 { x = 0x9e3779b97f4a7c15 }
+	s.RandomState = x
+	return int(x % uint64(n))
 }
 
 func (s *State) addEvent(kind, text string, now time.Time) {
 	s.Events = append(s.Events, Event{AtTick: s.Tick, Kind: kind, Text: text, At: now})
 }
 
+func moneyString(cents int64) string { return fmt.Sprintf("%d.%02d", cents/100, cents%100) }
+
 func clamp(n, min, max int) int {
-	if n < min {
-		return min
-	}
-	if n > max {
-		return max
-	}
+	if n < min { return min }
+	if n > max { return max }
 	return n
 }
