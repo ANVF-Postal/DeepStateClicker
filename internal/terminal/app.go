@@ -206,6 +206,11 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	case screenGame:
 		// The tab strip is identified by its rendered labels, not a fixed row.
 		if strings.Contains(line, "[MAIN]") || strings.Contains(line, "[MESSAGES") {
+			arrowAt := strings.LastIndex(line, ">")
+			if arrowAt >= 0 && x >= arrowAt {
+				a.cycleTab(1)
+				return nil
+			}
 			messagesAt := strings.Index(line, "MESSAGES")
 			if messagesAt >= 0 && x >= messagesAt {
 				_ = a.state.OpenTab(game.TabMessages)
@@ -314,7 +319,17 @@ func (a *App) View() string {
 	}
 }
 
+// Centralized color vocabulary. The current terminal theme stays restrained;
+// extra hues are reserved for future crypto, casino, and message-category UIs.
 var (
+	cyan = lipgloss.Color("#69C6D2")
+	blue = lipgloss.Color("#7198D4")
+	teal = lipgloss.Color("#65B9A6")
+	violet = lipgloss.Color("#A88AD6")
+	magenta = lipgloss.Color("#D27CC1")
+	orange = lipgloss.Color("#D98B5F")
+	pink = lipgloss.Color("#D9879A")
+	lime = lipgloss.Color("#B7C96A")
 	ink = lipgloss.Color("#D8D8D0")
 	muted = lipgloss.Color("#777970")
 	red = lipgloss.Color("#B84B45")
@@ -385,7 +400,15 @@ func (a *App) gameView() string {
 		} else { labels = append(labels, labelStyle.Render(rendered)) }
 	}
 	tabLine := strings.Join(labels, "   ")
-	if lipgloss.Width(tabLine) > max(12, l.Width-8) { tabLine = truncate(tabLine, max(8, l.Width-10))+" >" }
+	if lipgloss.Width(tabLine) > max(12, l.Width-8) {
+		selectedLabel := "[MAIN]"
+		if a.state.CurrentTab == game.TabMessages {
+			selectedLabel = "[MESSAGES"
+			if unread > 0 { selectedLabel += fmt.Sprintf(" !%d", unread) }
+			selectedLabel += "]"
+		}
+		tabLine = selectedStyle.Render(selectedLabel) + " " + selectedStyle.Render(">")
+	}
 	b.WriteString(tabLine+"\n")
 	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
 	var panel string
