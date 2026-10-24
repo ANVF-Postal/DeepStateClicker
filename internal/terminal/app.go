@@ -426,7 +426,8 @@ func (a *App) messagesPanel(l uiLayout) string {
 			}
 			right.WriteString(titleStyle.Render(truncate(selected.Subject,rightWidth-2))+"\n")
 			right.WriteString(labelStyle.Render("FROM: "+truncate(selected.Sender,rightWidth-8))+"\n")
-			bodyLines:=strings.Split(wrapText(selected.Body,rightWidth-4),"\n")
+			compactBody:=strings.Join(strings.Fields(selected.Body)," ")
+			bodyLines:=strings.Split(wrapText(compactBody,rightWidth-4),"\n")
 			for i:=0;i<min(2,len(bodyLines));i++ { right.WriteString(truncate(bodyLines[i],rightWidth-3)+"\n") }
 			if len(selected.Choices)>0 && a.state.PendingReplyTicks==0 {
 				right.WriteString(selectedStyle.Render("[1] "+truncate(selected.Choices[0],rightWidth-7))+"\n")
@@ -441,7 +442,8 @@ func (a *App) messagesPanel(l uiLayout) string {
 		b.WriteString(titleStyle.Render("INBOX")+"\n")
 		b.WriteString(selectedStyle.Render("› "+truncate(selected.Subject,max(16,l.Width-10)))+"\n")
 		b.WriteString(labelStyle.Render("FROM: "+truncate(selected.Sender,max(16,l.Width-12)))+"\n")
-		bodyLines:=strings.Split(wrapText(selected.Body,max(24,l.Width-8)),"\n")
+		compactBody:=strings.Join(strings.Fields(selected.Body)," ")
+		bodyLines:=strings.Split(wrapText(compactBody,max(24,l.Width-8)),"\n")
 		for i:=0;i<min(2,len(bodyLines));i++ { b.WriteString(truncate(bodyLines[i],max(12,l.Width-6))+"\n") }
 		if len(selected.Choices)>0 && a.state.PendingReplyTicks==0 {
 			b.WriteString(selectedStyle.Render("[1] "+truncate(selected.Choices[0],max(12,l.Width-10)))+"\n")
