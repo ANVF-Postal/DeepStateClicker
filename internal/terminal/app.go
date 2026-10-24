@@ -128,9 +128,9 @@ func (a *App) layout() uiLayout {
 	w, h := a.width, a.height
 	if w < 24 { w = 24 }; if h < 12 { h = 12 }
 	return uiLayout{
-		Width:w, Height:h, TabsY:4, ContentY:6,
-		ExploitY:12, StoreCapacityY:8, StoreCalibrationY:10, StoreAutomationY:12,
-		MessageFirstY:8, MessageLastY:12, TickerY:h-2,
+		Width:w, Height:h, TabsY:10, ContentY:12,
+		ExploitY:17, StoreCapacityY:14, StoreCalibrationY:16, StoreAutomationY:18,
+		MessageFirstY:13, MessageLastY:17, TickerY:h-2,
 		SideBySide:w >= 100,
 	}
 }
@@ -336,7 +336,7 @@ func (a *App) printPanel(l uiLayout) string {
 	bar := strings.Repeat("━",progress)+strings.Repeat("─",width-progress)
 	marker := "▶"
 	if a.state.Batch.WindowOpen { marker = okStyle.Render("◆") }
-	if progress < width { bar = bar[:progress]+marker+bar[progress+1:] }
+	if progress < width { runes := []rune(bar); runes[progress] = []rune(marker)[0]; bar = string(runes) }
 	b.WriteString("  "+lineStyle.Render(bar)+"\n")
 	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%",a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n\n")
 	if a.state.Batch.WindowOpen {
@@ -371,36 +371,62 @@ func (a *App) storePanel(l uiLayout) string {
 }
 
 func (a *App) messagesPanel(l uiLayout) string {
+	if len(a.state.Messages) == 0 {
+		return titleStyle.Render("MESSAGES")+"   "+labelStyle.Render("INTERNAL MAIL")+"\n\n"+labelStyle.Render("No messages.")
+	}
+	selected := a.state.SelectedMessage()
+	if selected == nil { return titleStyle.Render("MESSAGES")+"\n" }
+	if l.SideBySide {
+		leftWidth := max(28, min(36, l.Width/3))
+		rightWidth := max(40, l.Width-leftWidth-8)
+		var left, right strings.Builder
+		left.WriteString(titleStyle.Render("INBOX")+"\n")
+		visible := min(len(a.state.Messages), 5)
+		for i:=0; i<visible; i++ {
+			m:=a.state.Messages[i]
+			cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }
+			status:=" "; if !m.Read { status="●" }
+			line:=truncate(fmt.Sprintf("%s%s %s",cursor,status,m.Subject),leftWidth-2)
+			if m.ID==a.state.SelectedMessageID { left.WriteString(selectedStyle.Render(line)) } else { left.WriteString(labelStyle.Render(line)) }
+			left.WriteString("\n"+labelStyle.Render("  "+truncate(m.Sender,leftWidth-4))+"\n")
+		}
+		right.WriteString(titleStyle.Render("READING PANE")+"\n")
+		right.WriteString(titleStyle.Render(selected.Subject)+"\n")
+		right.WriteString(labelStyle.Render("FROM: "+selected.Sender+" <"+selected.Address+">")+"\n")
+		right.WriteString(labelStyle.Render("TO: "+selected.To+"   RECEIVED: T+"+fmt.Sprintf("%ds",selected.AtTick))+"\n\n")
+		right.WriteString(wrapText(selected.Body,rightWidth-4)+"\n")
+		if len(selected.Choices)>0 && a.state.PendingReplyTicks==0 {
+			right.WriteString("\n"+selectedStyle.Render("[1] ")+selected.Choices[0]+"\n")
+			if len(selected.Choices)>1 { right.WriteString(selectedStyle.Render("[2] ")+selected.Choices[1]+"\n") }
+			if len(selected.Choices)>2 { right.WriteString(selectedStyle.Render("[3] ")+selected.Choices[2]+"\n") }
+			right.WriteString(labelStyle.Render("[I] Leave unanswered")+"\n")
+		} else if a.state.PendingReplyTicks>0 { right.WriteString("\n"+labelStyle.Render("Reply sent. Waiting for a response...")+"\n") }
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),
+			lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(right.String()))
+	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("MESSAGES")+"   "+labelStyle.Render("INTERNAL MAIL")+"\n")
-	if len(a.state.Messages)==0 { return b.String()+"\n"+labelStyle.Render("No messages.") }
-	// The same row range is used by mouse hit-testing and the inbox list.
-	start,end := 0,min(len(a.state.Messages),5)
-	for i:=start;i<end;i++ {
+	visible:=min(len(a.state.Messages),5)
+	for i:=0;i<visible;i++ {
 		m:=a.state.Messages[i]
-		cursor:=" "
-		if m.ID==a.state.SelectedMessageID { cursor="›" }
-		status:=" "
-		if !m.Read { status="●" }
-		line:=fmt.Sprintf("%s%s %-22s %s",cursor,status,m.Sender, m.Subject)
-		if m.ID==a.state.SelectedMessageID { b.WriteString(selectedStyle.Render(truncate(line,max(20,l.Width-6)))) } else { b.WriteString(labelStyle.Render(truncate(line,max(20,l.Width-6)))) }
+		cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }
+		status:=" "; if !m.Read { status="●" }
+		line:=truncate(fmt.Sprintf("%s%s %-18s %s",cursor,status,m.Sender,m.Subject),max(20,l.Width-6))
+		if m.ID==a.state.SelectedMessageID { b.WriteString(selectedStyle.Render(line)) } else { b.WriteString(labelStyle.Render(line)) }
 		b.WriteString("\n")
 	}
-	m:=a.state.SelectedMessage()
-	if m==nil { return b.String() }
 	b.WriteString(lineStyle.Render(strings.Repeat("─",max(20,l.Width-6)))+"\n")
-	b.WriteString(titleStyle.Render(m.Subject)+"\n")
-	b.WriteString(labelStyle.Render("FROM: "+m.Sender+"  <"+m.Address+">")+"\n")
-	b.WriteString(labelStyle.Render("TO: "+m.To+"    RECEIVED: "+fmt.Sprintf("T+%ds",m.AtTick))+"\n\n")
-	b.WriteString(wrapText(m.Body,max(24,l.Width-8))+"\n")
-	if len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
-		b.WriteString("\n"+selectedStyle.Render("[1] ")+m.Choices[0]+"\n")
-		if len(m.Choices)>1 { b.WriteString(selectedStyle.Render("[2] ")+m.Choices[1]+"\n") }
-		if len(m.Choices)>2 { b.WriteString(selectedStyle.Render("[3] ")+m.Choices[2]+"\n") }
+	b.WriteString(titleStyle.Render(selected.Subject)+"\n")
+	b.WriteString(labelStyle.Render("FROM: "+selected.Sender+" <"+selected.Address+">")+"\n")
+	b.WriteString(labelStyle.Render("TO: "+selected.To+"    RECEIVED: T+"+fmt.Sprintf("%ds",selected.AtTick))+"\n\n")
+	b.WriteString(wrapText(selected.Body,max(24,l.Width-8))+"\n")
+	if len(selected.Choices)>0 && a.state.PendingReplyTicks==0 {
+		b.WriteString("\n"+selectedStyle.Render("[1] ")+selected.Choices[0]+"\n")
+		if len(selected.Choices)>1 { b.WriteString(selectedStyle.Render("[2] ")+selected.Choices[1]+"\n") }
+		if len(selected.Choices)>2 { b.WriteString(selectedStyle.Render("[3] ")+selected.Choices[2]+"\n") }
 		b.WriteString(labelStyle.Render("[I] Leave unanswered")+"\n")
-	} else if a.state.PendingReplyTicks>0 {
-		b.WriteString("\n"+labelStyle.Render("Reply sent. Waiting for a response...")+"\n")
-	}
+	} else if a.state.PendingReplyTicks>0 { b.WriteString("\n"+labelStyle.Render("Reply sent. Waiting for a response...")+"\n") }
 	return b.String()
 }
 
