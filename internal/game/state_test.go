@@ -71,3 +71,35 @@ func TestSimulationDoesNotAdvanceAfterRunEnds(t *testing.T) {
 	s.Advance(time.Unix(2,0))
 	if s.Tick!=0 { t.Fatalf("dead run advanced to tick %d",s.Tick) }
 }
+
+
+func TestNetWorthOnlyCountsCashUntilAssetsExist(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = 725
+	s.TotalPrinted = 10_000
+	s.Advance(now.Add(time.Second))
+	if s.EstimatedNetWorth != s.CashOnHand {
+		t.Fatalf("without assets, net worth should equal cash on hand: worth=%d cash=%d", s.EstimatedNetWorth, s.CashOnHand)
+	}
+}
+
+func TestWindowCalibrationAddsOnlyOneTick(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.Upgrades.WindowCalibration = true
+	for i := 0; i < ExploitWindowStart; i++ {
+		s.Advance(now.Add(time.Duration(i+1) * time.Second))
+	}
+	if !s.Batch.WindowOpen {
+		t.Fatal("calibrated opportunity should still open at the normal start")
+	}
+	s.Advance(now.Add(time.Duration(ExploitWindowStart+1) * time.Second))
+	if !s.Batch.WindowOpen {
+		t.Fatal("calibration should extend the opportunity by one tick")
+	}
+	s.Advance(now.Add(time.Duration(ExploitWindowStart+2) * time.Second))
+	if s.Batch.WindowOpen {
+		t.Fatal("calibration should not extend the opportunity by more than one tick")
+	}
+}
