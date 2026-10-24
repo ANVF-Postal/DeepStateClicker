@@ -636,6 +636,11 @@ func (a *App) newsStripView(width int) string {
 	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(string(visibleRunes))
 }
 
+func (a *App) mouseOnTabRow(y int) bool {
+	lines := plainViewLines(a.View())
+	return y >= 0 && y < len(lines) && (strings.Contains(lines[y], "[MAIN]") || strings.Contains(lines[y], "[MESSAGES"))
+}
+
 func (a *App) isInjectAt(x, y int) bool {
 	if a.screen != screenGame || a.state.CurrentTab != game.TabPrint { return false }
 	lines := plainViewLines(a.View())
