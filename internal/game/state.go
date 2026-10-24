@@ -13,9 +13,9 @@ const (
 	CapacityUpgradeTo   int64 = 250_000 // $2,500.00
 	AutomationCost      int64 = 5_000   // $50.00
 
-	BatchCycleTicks = 14
-	ExploitWindowStart = 4
-	ExploitWindowEnd = 5
+	BatchCycleTicks = 60
+	ExploitWindowStart = 8
+	ExploitWindowEnd = 10
 )
 
 var (
