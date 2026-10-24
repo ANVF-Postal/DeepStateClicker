@@ -132,13 +132,16 @@ func (a *App) layout() uiLayout {
 	choiceBase := 12
 	if sideBySide { bodyWidth = max(24, w-max(28,min(36,w/3))-12); choiceBase = 6 }
 	choiceY := 0
-	if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 {
+	messageLastY := 17
+	if h < 30 {
+		if sideBySide { choiceY = 16; messageLastY = 16 } else { choiceY = 17; messageLastY = 13 }
+	} else if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 {
 		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
 	}
 	return uiLayout{
 		Width:w, Height:h, TabsY:10, ContentY:12,
 		ExploitY:17, StoreCapacityY:14, StoreCalibrationY:16, StoreAutomationY:18,
-		MessageFirstY:13, MessageLastY:17, MessageChoiceFirstY:choiceY, TickerY:h-2,
+		MessageFirstY:13, MessageLastY:messageLastY, MessageChoiceFirstY:choiceY, TickerY:h-2,
 		SideBySide:sideBySide,
 	}
 }
@@ -336,10 +339,14 @@ func (a *App) gameView() string {
 	case game.TabStore: panel = a.storePanel(l)
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
+	panelLines := max(4, l.TickerY-l.ContentY-2)
+	if a.message != "" { panelLines-- }
+	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
-	if a.message != "" { b.WriteString(subtitleStyle.Render(a.message)+"\n") }
+	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message,max(12,l.Width-4)))+"\n") }
+	for strings.Count(b.String(),"\n") < l.TickerY-1 { b.WriteString("\n") }
 	ticker := tickerText(a.state, max(12,l.Width-4))
-	b.WriteString("\n"+lipgloss.NewStyle().Foreground(lipgloss.Color("#B8A46E")).Width(max(12,l.Width-4)).MaxHeight(1).Render(ticker)+"\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#B8A46E")).Width(max(12,l.Width-4)).MaxHeight(1).Render(ticker)+"\n")
 	b.WriteString(labelStyle.Render("X/P exploit  S store  M messages  1–3 choose  I ignore  V save  H help  Q quit"))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
 }
@@ -364,10 +371,9 @@ func (a *App) printPanel(l uiLayout) string {
 	} else {
 		b.WriteString("  "+labelStyle.Render("[X]  INJECT")+"   "+labelStyle.Render("—") +"\n")
 	}
-	b.WriteString(labelStyle.Render("  The queue continues whether you act or not.")+"\n")
-	b.WriteString("\n  "+labelStyle.Render(a.state.Batch.LastOutcome)+"\n")
-	b.WriteString("\n  "+selectedStyle.Render("[S] Storage & upgrades"))
-	if a.state.EmailUnlocked { b.WriteString("\n  "+selectedStyle.Render("[M] Open messages")) }
+	b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome,max(12,l.Width-8)))+"\n")
+	b.WriteString("  "+selectedStyle.Render("[S] Store")+"   ")
+	if a.state.EmailUnlocked { b.WriteString(selectedStyle.Render("[M] Messages")) }
 	return b.String()
 }
 
@@ -375,18 +381,15 @@ func (a *App) storePanel(l uiLayout) string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("STORAGE & MACHINE UPGRADES")+"\n\n")
 	if a.state.Upgrades.ExpandedCashCapacity { b.WriteString(okStyle.Render("[1] LOCKABLE CASH BOX — INSTALLED")+"\n") } else {
-		b.WriteString(fmt.Sprintf("  %s Lockable cash box — $%s\n",selectedStyle.Render("[1]"),money(game.CapacityUpgradeCost)))
-		b.WriteString(labelStyle.Render("      Expands cash-on-hand capacity to $2,500.")+"\n")
+		b.WriteString(fmt.Sprintf("  %s Lockable cash box — $%s; capacity to $2,500",selectedStyle.Render("[1]"),money(game.CapacityUpgradeCost))+"\n")
 	}
 	if a.state.Upgrades.WindowCalibration { b.WriteString(okStyle.Render("[2] QUEUE INDICATOR CALIBRATION — INSTALLED")+"\n") } else {
-		b.WriteString(fmt.Sprintf("  %s Queue indicator calibration — $15.00\n",selectedStyle.Render("[2]")))
-		b.WriteString(labelStyle.Render("      Makes the brief opportunity easier to catch.")+"\n")
+		b.WriteString("  "+selectedStyle.Render("[2]")+" Queue indicator calibration — $15.00; wider window\n")
 	}
 	if a.state.Upgrades.PrintAutomation { b.WriteString(okStyle.Render("[3] QUIET EXPLOIT AUTOMATION — INSTALLED")+"\n") } else {
-		b.WriteString(fmt.Sprintf("  %s Quiet exploit automation — $%s\n",selectedStyle.Render("[3]"),money(game.AutomationCost)))
-		b.WriteString(labelStyle.Render("      Queues an instruction during an opportunity.")+"\n")
+		b.WriteString(fmt.Sprintf("  %s Quiet exploit automation — $%s; queues automatically\n",selectedStyle.Render("[3]"),money(game.AutomationCost)))
 	}
-	b.WriteString("\n"+labelStyle.Render("Money must be in cash on hand to buy an upgrade."))
+	b.WriteString(labelStyle.Render("  Purchases require cash on hand."))
 	return b.String()
 }
 
@@ -396,16 +399,52 @@ func (a *App) messagesPanel(l uiLayout) string {
 	}
 	selected := a.state.SelectedMessage()
 	if selected == nil { return titleStyle.Render("MESSAGES")+"\n" }
+	if l.Height < 30 {
+		if l.SideBySide {
+			leftWidth:=max(28,min(36,l.Width/3))
+			rightWidth:=max(40,l.Width-leftWidth-8)
+			var left,right strings.Builder
+			left.WriteString(titleStyle.Render("INBOX")+"\n")
+			visible:=min(len(a.state.Messages),4)
+			for i:=0;i<visible;i++ {
+				m:=a.state.Messages[i]; cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }; status:=" "; if !m.Read { status="●" }
+				line:=truncate(fmt.Sprintf("%s%s %s",cursor,status,m.Subject),leftWidth-2)
+				if m.ID==a.state.SelectedMessageID { left.WriteString(selectedStyle.Render(line)) } else { left.WriteString(labelStyle.Render(line)) }
+				left.WriteString("\n")
+			}
+			right.WriteString(titleStyle.Render(truncate(selected.Subject,rightWidth-2))+"\n")
+			right.WriteString(labelStyle.Render("FROM: "+truncate(selected.Sender,rightWidth-8))+"\n")
+			bodyLines:=strings.Split(wrapText(selected.Body,rightWidth-4),"\n")
+			for i:=0;i<min(2,len(bodyLines));i++ { right.WriteString(truncate(bodyLines[i],rightWidth-3)+"\n") }
+			if len(selected.Choices)>0 && a.state.PendingReplyTicks==0 {
+				right.WriteString(selectedStyle.Render("[1] "+truncate(selected.Choices[0],rightWidth-7))+"\n")
+				if len(selected.Choices)>1 { right.WriteString(selectedStyle.Render("[2] "+truncate(selected.Choices[1],rightWidth-7))+"\n") }
+				if len(selected.Choices)>2 { right.WriteString(selectedStyle.Render("[3] "+truncate(selected.Choices[2],rightWidth-7))+"\n") }
+			} else { right.WriteString(labelStyle.Render("Reply pending...")+"\n") }
+			return lipgloss.JoinHorizontal(lipgloss.Top,
+				lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),
+				lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(right.String()))
+		}
+		var b strings.Builder
+		b.WriteString(titleStyle.Render("INBOX")+"\n")
+		b.WriteString(selectedStyle.Render("› "+truncate(selected.Subject,max(16,l.Width-10)))+"\n")
+		b.WriteString(labelStyle.Render("FROM: "+truncate(selected.Sender,max(16,l.Width-12)))+"\n")
+		bodyLines:=strings.Split(wrapText(selected.Body,max(24,l.Width-8)),"\n")
+		for i:=0;i<min(2,len(bodyLines));i++ { b.WriteString(truncate(bodyLines[i],max(12,l.Width-6))+"\n") }
+		if len(selected.Choices)>0 && a.state.PendingReplyTicks==0 {
+			b.WriteString(selectedStyle.Render("[1] "+truncate(selected.Choices[0],max(12,l.Width-10)))+"\n")
+			if len(selected.Choices)>1 { b.WriteString(selectedStyle.Render("[2] "+truncate(selected.Choices[1],max(12,l.Width-10)))+"\n") }
+			if len(selected.Choices)>2 { b.WriteString(selectedStyle.Render("[3] "+truncate(selected.Choices[2],max(12,l.Width-10)))+"\n") }
+		} else { b.WriteString(labelStyle.Render("Reply pending...")+"\n") }
+		return b.String()
+	}
 	if l.SideBySide {
-		leftWidth := max(28, min(36, l.Width/3))
-		rightWidth := max(40, l.Width-leftWidth-8)
-		var left, right strings.Builder
+		leftWidth:=max(28,min(36,l.Width/3)); rightWidth:=max(40,l.Width-leftWidth-8)
+		var left,right strings.Builder
 		left.WriteString(titleStyle.Render("INBOX")+"\n")
-		visible := min(len(a.state.Messages), 5)
-		for i:=0; i<visible; i++ {
-			m:=a.state.Messages[i]
-			cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }
-			status:=" "; if !m.Read { status="●" }
+		visible:=min(len(a.state.Messages),5)
+		for i:=0;i<visible;i++ {
+			m:=a.state.Messages[i]; cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }; status:=" "; if !m.Read { status="●" }
 			line:=truncate(fmt.Sprintf("%s%s %s",cursor,status,m.Subject),leftWidth-2)
 			if m.ID==a.state.SelectedMessageID { left.WriteString(selectedStyle.Render(line)) } else { left.WriteString(labelStyle.Render(line)) }
 			left.WriteString("\n")
@@ -421,17 +460,13 @@ func (a *App) messagesPanel(l uiLayout) string {
 			if len(selected.Choices)>2 { right.WriteString(selectedStyle.Render("[3] ")+selected.Choices[2]+"\n") }
 			right.WriteString(labelStyle.Render("[I] Leave unanswered")+"\n")
 		} else if a.state.PendingReplyTicks>0 { right.WriteString("\n"+labelStyle.Render("Reply sent. Waiting for a response...")+"\n") }
-		return lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),
-			lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(right.String()))
+		return lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(right.String()))
 	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("MESSAGES")+"   "+labelStyle.Render("INTERNAL MAIL")+"\n")
 	visible:=min(len(a.state.Messages),5)
 	for i:=0;i<visible;i++ {
-		m:=a.state.Messages[i]
-		cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }
-		status:=" "; if !m.Read { status="●" }
+		m:=a.state.Messages[i]; cursor:=" "; if m.ID==a.state.SelectedMessageID { cursor="›" }; status:=" "; if !m.Read { status="●" }
 		line:=truncate(fmt.Sprintf("%s%s %-18s %s",cursor,status,m.Sender,m.Subject),max(20,l.Width-6))
 		if m.ID==a.state.SelectedMessageID { b.WriteString(selectedStyle.Render(line)) } else { b.WriteString(labelStyle.Render(line)) }
 		b.WriteString("\n")
@@ -450,6 +485,14 @@ func (a *App) messagesPanel(l uiLayout) string {
 	return b.String()
 }
 
+func fitLines(s string, maxLines int) string {
+	lines:=strings.Split(s,"\n")
+	if len(lines)<=maxLines { return s }
+	if maxLines<=0 { return "" }
+	lines=lines[:maxLines]
+	if len(lines)>0 { lines[len(lines)-1]=truncate(lines[len(lines)-1],max(8,len([]rune(lines[len(lines)-1])))) }
+	return strings.Join(lines,"\n")
+}
 func unreadCount(messages []game.Message) int { n:=0; for _,m:=range messages { if !m.Read { n++ } }; return n }
 func tickerText(s game.State,width int) string {
 	if len(game.NewsHeadlines)==0 { return "" }
