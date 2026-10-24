@@ -134,8 +134,11 @@ func (a *App) layout() uiLayout {
 	choiceY := 0
 	messageLastY := 17
 	if h < 30 {
-		if sideBySide { choiceY = 16; messageLastY = 16 } else { choiceY = 17; messageLastY = 13 }
-	} else if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 {
+		if sideBySide { messageLastY = 16 } else { messageLastY = 13 }
+		if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
+			if sideBySide { choiceY = 16 } else { choiceY = 17 }
+		}
+	} else if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
 		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
 	}
 	return uiLayout{
@@ -509,9 +512,10 @@ func tickerText(s game.State,width int) string {
 	source:="  WORLD BULLETIN  /  "
 	full:=source+headline+"     •     "+headline
 	if len(full)<=width { return full }
-	offset:=int(s.Tick/2)%max(1,len(full))
-	loop:=full+ "     "+full
-	return truncate(loop[offset:],width)
+	runes:=[]rune(full)
+	offset:=int(s.Tick/2)%max(1,len(runes))
+	loop:=string(append(append([]rune{},runes...),append([]rune("     "),runes...)...))
+	return truncate(string([]rune(loop)[offset:]),width)
 }
 func truncate(s string,width int) string {
 	if width<1 { return "" }
