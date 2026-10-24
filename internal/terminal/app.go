@@ -39,9 +39,10 @@ type App struct {
 	message string
 	uiFrame int64
 	newsHeadline string
-	newsExpiresAt time.Time
-	newsFlashUntil time.Time
+	newsStartedAt time.Time
 	injectFlashUntil time.Time
+	injectMouseHeld bool
+	injectHeldRed bool
 }
 
 func New(state game.State) *App {
@@ -60,7 +61,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
 	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+			a.injectMouseHeld = false
+			a.injectHeldRed = false
+		}
+		if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft && a.injectMouseHeld {
+			// Keep the failed-injection feedback visible for the duration of a held click.
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			a.injectMouseHeld = a.isInjectAt(msg.X, msg.Y)
+			a.injectHeldRed = false
 			return a, a.handleMouse(msg.X, msg.Y)
 		}
 		if a.screen == screenGame && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) && a.mouseOnTabRow(msg.Y) {
@@ -169,12 +179,8 @@ func plainViewLines(view string) []string {
 }
 
 func (a *App) handleMouse(x, y int) tea.Cmd {
-	// The reported hitbox offset worsened each time Y was subtracted, so the
-	// rendered-line lookup needs the opposite correction on intro/game screens.
-	// Keep the menu unchanged because its mouse coordinates already align.
-	if a.screen != screenMenu {
-		y++
-	}
+	// Bubble Tea mouse coordinates already include the terminal's rendered rows.
+	// Do not offset Y: doing so made every hitbox one row lower than its label.
 
 	// Hit testing uses the actual rendered view, including its padding and any
 	// rows added by wrapping. This avoids hard-coded coordinates drifting when
@@ -273,8 +279,12 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	switch key {
 	case "p", " ", "x":
 		if err := a.state.QueueExploit(now); err != nil {
-			if err == game.ErrWindowClosed { a.injectFlashUntil = now.Add(500 * time.Millisecond); a.message = "" } else { a.message = err.Error() }
-		} else { a.message = "" }
+			if err == game.ErrWindowClosed {
+				a.injectFlashUntil = now.Add(150 * time.Millisecond)
+				a.injectHeldRed = a.injectMouseHeld
+				a.message = ""
+			} else { a.message = err.Error() }
+		} else { a.injectHeldRed = false; a.message = "" }
 	case "1":
 		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
 			if err := a.state.BuyCapacityUpgrade(now); err != nil { a.message = err.Error() } else { a.message = "Cash box installed." }
@@ -457,7 +467,7 @@ func (a *App) printPanel(l uiLayout) string {
 	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%", a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n")
 	injectStyle := labelStyle
 	if a.state.Batch.WindowOpen { injectStyle = okStyle }
-	if time.Now().Before(a.injectFlashUntil) { injectStyle = dangerStyle.Bold(true) }
+	if a.injectHeldRed || time.Now().Before(a.injectFlashUntil) { injectStyle = dangerStyle.Bold(true) }
 	b.WriteString("  "+injectStyle.Render("[X]  INJECT")+"\n")
 	outcome := strings.ToLower(a.state.Batch.LastOutcome)
 	if a.state.Batch.LastOutcome != "" && !strings.Contains(outcome, "queue moved on") && !strings.Contains(outcome, "no instruction was sent") {
@@ -588,17 +598,17 @@ func (a *App) messagesPanel(l uiLayout) string {
 func (a *App) startNewsDispatch() {
 	if a.state.NewsIndex < 0 || a.state.NewsIndex >= len(game.NewsHeadlines) { return }
 	a.newsHeadline = game.NewsHeadlines[a.state.NewsIndex]
-	now := time.Now()
-	a.newsFlashUntil = now.Add(900*time.Millisecond)
-	a.newsExpiresAt = now.Add(7*time.Second)
+	a.newsStartedAt = time.Now()
 }
 
 func (a *App) newsStripView(width int) string {
-	now := time.Now()
-	if a.newsHeadline == "" || !now.Before(a.newsExpiresAt) {
+	if a.newsHeadline == "" {
 		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
 	}
-	if now.Before(a.newsFlashUntil) {
+	now := time.Now()
+	elapsed := now.Sub(a.newsStartedAt)
+	const flashDuration = 2 * time.Second
+	if elapsed < flashDuration {
 		color := amber
 		headline := strings.ToLower(a.newsHeadline)
 		switch {
@@ -611,17 +621,26 @@ func (a *App) newsStripView(width int) string {
 		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
 	}
 	runes := []rune(a.newsHeadline)
-	loop := append(append([]rune{}, runes...), append([]rune("   •   "), runes...)...)
-	offset := int(a.uiFrame) % max(1, len(loop))
-	visible := string(loop[offset:])
-	if len([]rune(visible)) > width { visible = string([]rune(visible)[:width]) }
-	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(visible)
+	offset := int((elapsed-flashDuration)/(100*time.Millisecond))
+	// Start with a full screen of leading spaces; the headline enters from the
+	// right edge, crosses the entire strip, then clears before the idle marker returns.
+	totalTravel := width + len(runes)
+	if offset >= totalTravel {
+		a.newsHeadline = ""
+		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
+	}
+	track := strings.Repeat(" ", width) + string(runes) + strings.Repeat(" ", width)
+	start := max(0, min(len([]rune(track)), offset))
+	visibleRunes := []rune(track)[start:]
+	if len(visibleRunes) > width { visibleRunes = visibleRunes[:width] }
+	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(string(visibleRunes))
 }
 
-func (a *App) mouseOnTabRow(y int) bool {
-	if a.screen != screenMenu { y++ }
+func (a *App) isInjectAt(x, y int) bool {
+	if a.screen != screenGame || a.state.CurrentTab != game.TabPrint { return false }
 	lines := plainViewLines(a.View())
-	return y >= 0 && y < len(lines) && (strings.Contains(lines[y], "[MAIN]") || strings.Contains(lines[y], "[MESSAGES"))
+	if y < 0 || y >= len(lines) { return false }
+	return strings.Contains(lines[y], "INJECT")
 }
 
 func (a *App) cycleTab(delta int) {
