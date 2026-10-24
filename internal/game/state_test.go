@@ -100,10 +100,14 @@ func TestWindowCalibrationAddsOnlyOneTick(t *testing.T) {
 	}
 	s.Advance(now.Add(time.Duration(ExploitWindowStart+2) * time.Second))
 	if !s.Batch.WindowOpen {
-		t.Fatal("the final calibrated tick should remain open")
+		t.Fatal("the normal final tick should remain open")
 	}
 	s.Advance(now.Add(time.Duration(ExploitWindowStart+3) * time.Second))
+	if !s.Batch.WindowOpen {
+		t.Fatal("the single calibrated extra tick should remain open")
+	}
+	s.Advance(now.Add(time.Duration(ExploitWindowStart+4) * time.Second))
 	if s.Batch.WindowOpen {
-		t.Fatal("calibration should not extend the opportunity by more than one tick")
+		t.Fatal("calibration should close after exactly one extra tick")
 	}
 }
