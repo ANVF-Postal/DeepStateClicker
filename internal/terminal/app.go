@@ -25,7 +25,7 @@ type tickMsg time.Time
 type uiLayout struct {
 	Width, Height int
 	TabsY, ContentY, ExploitY, StoreCapacityY, StoreCalibrationY, StoreAutomationY int
-	MessageFirstY, MessageLastY, TickerY int
+	MessageFirstY, MessageLastY, MessageChoiceFirstY, TickerY int
 	SideBySide bool
 }
 
@@ -127,11 +127,19 @@ func (a *App) loadGame() {
 func (a *App) layout() uiLayout {
 	w, h := a.width, a.height
 	if w < 24 { w = 24 }; if h < 12 { h = 12 }
+	sideBySide := w >= 100
+	bodyWidth := max(24, w-12)
+	choiceBase := 12
+	if sideBySide { bodyWidth = max(24, w-max(28,min(36,w/3))-12); choiceBase = 6 }
+	choiceY := 0
+	if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 {
+		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
+	}
 	return uiLayout{
 		Width:w, Height:h, TabsY:10, ContentY:12,
 		ExploitY:17, StoreCapacityY:14, StoreCalibrationY:16, StoreAutomationY:18,
-		MessageFirstY:13, MessageLastY:17, TickerY:h-2,
-		SideBySide:w >= 100,
+		MessageFirstY:13, MessageLastY:17, MessageChoiceFirstY:choiceY, TickerY:h-2,
+		SideBySide:sideBySide,
 	}
 }
 
@@ -169,15 +177,19 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		case game.TabMessages:
 			if y >= l.MessageFirstY && y <= l.MessageLastY {
 				idx := y-l.MessageFirstY
-				if idx >= 0 && idx < len(a.state.Messages) {
+				if idx >= 0 && idx < min(len(a.state.Messages),5) {
 					_ = a.state.SelectMessage(a.state.Messages[idx].ID, time.Now())
 					return nil
 				}
 			}
-			if y == l.MessageLastY+3 { return a.handleGameKey("1") }
-			if y == l.MessageLastY+4 { return a.handleGameKey("2") }
-			if y == l.MessageLastY+5 { return a.handleGameKey("3") }
-			if y == l.MessageLastY+6 { return a.handleGameKey("i") }
+			if l.MessageChoiceFirstY > 0 && y >= l.MessageChoiceFirstY && y <= l.MessageChoiceFirstY+3 {
+				switch y-l.MessageChoiceFirstY {
+				case 0: return a.handleGameKey("1")
+				case 1: return a.handleGameKey("2")
+				case 2: return a.handleGameKey("3")
+				case 3: return a.handleGameKey("i")
+				}
+			}
 		}
 	}
 	return nil
@@ -388,7 +400,7 @@ func (a *App) messagesPanel(l uiLayout) string {
 			status:=" "; if !m.Read { status="●" }
 			line:=truncate(fmt.Sprintf("%s%s %s",cursor,status,m.Subject),leftWidth-2)
 			if m.ID==a.state.SelectedMessageID { left.WriteString(selectedStyle.Render(line)) } else { left.WriteString(labelStyle.Render(line)) }
-			left.WriteString("\n"+labelStyle.Render("  "+truncate(m.Sender,leftWidth-4))+"\n")
+			left.WriteString("\n")
 		}
 		right.WriteString(titleStyle.Render("READING PANE")+"\n")
 		right.WriteString(titleStyle.Render(selected.Subject)+"\n")
