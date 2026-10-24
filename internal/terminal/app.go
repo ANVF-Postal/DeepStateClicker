@@ -21,6 +21,7 @@ const (
 	screenGame
 )
 type tickMsg time.Time
+type uiPulseMsg time.Time
 
 type uiLayout struct {
 	Width, Height int
@@ -35,6 +36,7 @@ type App struct {
 	width, height int
 	menu int
 	message string
+	uiFrame int64
 }
 
 func New(state game.State) *App {
@@ -60,6 +62,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.state.Advance(time.Time(msg))
 			return a, tick()
 		}
+	case uiPulseMsg:
+		if a.screen == screenGame {
+			a.uiFrame++
+			return a, uiPulse()
+		}
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
@@ -75,7 +82,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, a.chooseMenu()
 			case screenIntro:
 				a.screen, a.message = screenGame, ""
-				return a, tick()
+				return a, tea.Batch(tick(), uiPulse())
 			case screenGame:
 				if a.state.CurrentTab == game.TabMessages { a.message = "" }
 			}
@@ -104,6 +111,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func tick() tea.Cmd { return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }) }
+func uiPulse() tea.Cmd { return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return uiPulseMsg(t) }) }
 
 func (a *App) chooseMenu() tea.Cmd {
 	switch a.menu {
@@ -112,7 +120,7 @@ func (a *App) chooseMenu() tea.Cmd {
 		a.screen, a.message = screenIntro, ""
 	case 1:
 		a.loadGame()
-		if a.screen == screenGame { return tick() }
+		if a.screen == screenGame { return tea.Batch(tick(), uiPulse()) }
 	case 2: return tea.Quit
 	}
 	return nil
@@ -161,9 +169,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		case 10: a.menu = 2; return a.chooseMenu()
 		}
 	case screenIntro:
-		if y >= 8 { a.screen, a.message = screenGame, ""; return tick() }
+		if y >= 8 { a.screen, a.message = screenGame, ""; return tea.Batch(tick(), uiPulse()) }
 	case screenGame:
-		if y == l.TabsY {
+		if y >= l.TabsY-1 && y <= l.TabsY+1 {
 			switch {
 			case x >= 2 && x < 14: _ = a.state.OpenTab(game.TabPrint); a.message = ""
 			case x >= 14 && x < 26: _ = a.state.OpenTab(game.TabStore); a.message = ""
@@ -176,7 +184,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		}
 		switch a.state.CurrentTab {
 		case game.TabPrint:
-			if y == l.ExploitY { return a.handleGameKey("x") }
+			if y >= l.ExploitY && y <= l.ExploitY+3 { return a.handleGameKey("x") }
 			if y == l.ExploitY+2 { return a.handleGameKey("s") }
 			if y == l.ExploitY+3 && a.state.EmailUnlocked { return a.handleGameKey("m") }
 		case game.TabStore:
@@ -334,8 +342,8 @@ func (a *App) gameView() string {
 		if tab == game.TabMessages && unread > 0 {
 			label += fmt.Sprintf(" !%d", unread)
 			if urgent {
-				if a.state.Tick%2 == 0 { labels = append(labels, dangerStyle.Render("["+label+"]")) } else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
-			} else if a.state.Tick%2 == 0 {
+				if a.uiFrame%5 < 3 { labels = append(labels, dangerStyle.Render("["+label+"]")) } else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
+			} else if a.uiFrame%5 < 3 {
 				labels = append(labels, selectedStyle.Render("["+label+"]"))
 			} else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
 		} else if tab == a.state.CurrentTab { labels=append(labels,selectedStyle.Render("["+label+"]")) } else { labels=append(labels,labelStyle.Render(" "+label+" ")) }
@@ -355,7 +363,7 @@ func (a *App) gameView() string {
 	b.WriteString(panel+"\n")
 	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message,max(12,l.Width-4)))+"\n") }
 	for strings.Count(b.String(),"\n") < l.TickerY-1 { b.WriteString("\n") }
-	ticker := tickerText(a.state, max(12,l.Width-4))
+	ticker := tickerText(a.state, max(12,l.Width-4), a.uiFrame)
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#B8A46E")).Width(max(12,l.Width-4)).MaxHeight(1).Render(ticker)+"\n")
 	b.WriteString(labelStyle.Render("X/P exploit  S store  M messages  1–3 choose  I ignore  V save  H help  Q quit"))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
@@ -508,14 +516,14 @@ func fitLines(s string, maxLines int) string {
 	return strings.Join(lines,"\n")
 }
 func unreadCount(messages []game.Message) int { n:=0; for _,m:=range messages { if !m.Read { n++ } }; return n }
-func tickerText(s game.State,width int) string {
+func tickerText(s game.State,width int, frame int64) string {
 	if len(game.NewsHeadlines)==0 { return "" }
 	headline:=game.NewsHeadlines[min(s.NewsIndex,len(game.NewsHeadlines)-1)]
 	source:="  WORLD BULLETIN  /  "
 	full:=source+headline+"     •     "+headline
 	if len(full)<=width { return full }
 	runes:=[]rune(full)
-	offset:=int(s.Tick/2)%max(1,len(runes))
+	offset:=int(frame/2)%max(1,len(runes))
 	loop:=string(append(append([]rune{},runes...),append([]rune("     "),runes...)...))
 	return truncate(string([]rune(loop)[offset:]),width)
 }
