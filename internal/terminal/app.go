@@ -150,9 +150,9 @@ func (a *App) layout() uiLayout {
 		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
 	}
 	return uiLayout{
-		Width:w, Height:h, TabsY:10, ContentY:12,
-		ExploitY:17, StoreCapacityY:14, StoreCalibrationY:16, StoreAutomationY:18,
-		MessageFirstY:13, MessageLastY:messageLastY, MessageChoiceFirstY:choiceY, TickerY:h-2,
+		Width:w, Height:h, TabsY:8, ContentY:12,
+		ExploitY:15, StoreCapacityY:12, StoreCalibrationY:14, StoreAutomationY:16,
+		MessageFirstY:11, MessageLastY:messageLastY-2, MessageChoiceFirstY:choiceY-2, TickerY:h-2,
 		SideBySide:sideBySide,
 	}
 }
@@ -168,12 +168,12 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	case screenMenu:
 		// Menu rows are derived from the menu's top padding and title block.
 		switch y {
-		case 8: a.menu = 0; return a.chooseMenu()
-		case 9: a.menu = 1; return a.chooseMenu()
-		case 10: a.menu = 2; return a.chooseMenu()
+		case 6: a.menu = 0; return a.chooseMenu()
+		case 7: a.menu = 1; return a.chooseMenu()
+		case 8: a.menu = 2; return a.chooseMenu()
 		}
 	case screenIntro:
-		if y >= 8 { a.screen, a.message = screenGame, ""; return tea.Batch(tick(), uiPulse()) }
+		if y >= 6 { a.screen, a.message = screenGame, ""; return tea.Batch(tick(), uiPulse()) }
 	case screenGame:
 		if y >= l.TabsY-1 && y <= l.TabsY+1 {
 			switch {
