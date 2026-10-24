@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -163,64 +164,110 @@ func (a *App) layout() uiLayout {
 }
 
 // The same layout object drives both drawing and mouse hit regions.
+var ansiSequences = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]")
+
+func plainViewLines(view string) []string {
+	plain := ansiSequences.ReplaceAllString(view, "")
+	return strings.Split(plain, "\n")
+}
+
 func (a *App) handleMouse(x, y int) tea.Cmd {
-	// gameView/menuView/introView add one row of top padding and two columns of left padding.
-	// Convert terminal coordinates back to the content coordinates used by layout().
-	x -= 2
-	y -= 1
-	l := a.layout()
+	// Hit testing uses the actual rendered view, including its padding and any
+	// rows added by wrapping. This avoids hard-coded coordinates drifting when
+	// money values, messages, or terminal dimensions change.
+	lines := plainViewLines(a.View())
+	if y < 0 || y >= len(lines) {
+		return nil
+	}
+	line := lines[y]
+
 	switch a.screen {
 	case screenMenu:
-		// Menu rows are derived from the menu's top padding and title block.
-		switch y {
-		case 8: a.menu = 0; return a.chooseMenu()
-		case 9: a.menu = 1; return a.chooseMenu()
-		case 10: a.menu = 2; return a.chooseMenu()
+		switch {
+		case strings.Contains(line, "NEW OPERATION"):
+			a.menu = 0
+			return a.chooseMenu()
+		case strings.Contains(line, "LOAD OPERATION"):
+			a.menu = 1
+			return a.chooseMenu()
+		case strings.Contains(line, "QUIT"):
+			a.menu = 2
+			return a.chooseMenu()
 		}
 	case screenIntro:
-		if y >= 6 { a.screen, a.message = screenGame, ""; return tea.Batch(tick(), uiPulse()) }
+		if y >= 3 {
+			a.screen, a.message = screenGame, ""
+			return a, tea.Batch(tick(), uiPulse())
+		}
 	case screenGame:
-		if y >= l.TabsY-1 && y <= l.TabsY+1 {
+		// The tab strip is identified by its rendered labels, not a fixed row.
+		if strings.Contains(line, "PRINT") && strings.Contains(line, "STORE") && !strings.Contains(line, "OPERATIONS") {
+			storeAt := strings.Index(line, "STORE")
+			messagesAt := strings.Index(line, "MESSAGES")
 			switch {
-			case x >= 2 && x < 14: _ = a.state.OpenTab(game.TabPrint); a.message = ""
-			case x >= 14 && x < 26: _ = a.state.OpenTab(game.TabStore); a.message = ""
-			case x >= 26 && a.state.EmailUnlocked:
+			case storeAt < 0 || x < storeAt:
+				_ = a.state.OpenTab(game.TabPrint)
+			case messagesAt >= 0 && x >= messagesAt:
 				_ = a.state.OpenTab(game.TabMessages)
-				if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, time.Now()) }
-				a.message = ""
+				if m := a.state.SelectedMessage(); m != nil {
+					_ = a.state.SelectMessage(m.ID, time.Now())
+				}
+			default:
+				_ = a.state.OpenTab(game.TabStore)
 			}
+			a.message = ""
 			return nil
 		}
+
 		switch a.state.CurrentTab {
 		case game.TabPrint:
-			if y == l.ExploitY && x >= 2 && x <= 18 { return a.handleGameKey("x") }
-			if y == l.ExploitY+2 { return a.handleGameKey("s") }
-			if y == l.ExploitY+3 && a.state.EmailUnlocked { return a.handleGameKey("m") }
-		case game.TabStore:
-			if y == l.StoreCapacityY { return a.handleGameKey("1") }
-			if y == l.StoreCalibrationY { return a.handleGameKey("2") }
-			if y == l.StoreAutomationY { return a.handleGameKey("3") }
-		case game.TabMessages:
-			if y >= l.MessageFirstY && y <= l.MessageLastY && (!l.SideBySide || x < max(28,min(36,l.Width/3))) {
-				idx := y-l.MessageFirstY
-				if idx >= 0 && idx < min(len(a.state.Messages),5) {
-					_ = a.state.SelectMessage(a.state.Messages[idx].ID, time.Now())
-					return nil
-				}
+			if strings.Contains(line, "INJECT") {
+				return a.handleGameKey("x")
 			}
-			if l.MessageChoiceFirstY > 0 && y >= l.MessageChoiceFirstY && y <= l.MessageChoiceFirstY+3 {
-				switch y-l.MessageChoiceFirstY {
-				case 0: return a.handleGameKey("1")
-				case 1: return a.handleGameKey("2")
-				case 2: return a.handleGameKey("3")
-				case 3: return a.handleGameKey("i")
+			if strings.Contains(line, "[S] Store") {
+				return a.handleGameKey("s")
+			}
+			if strings.Contains(line, "[M] Messages") {
+				return a.handleGameKey("m")
+			}
+		case game.TabStore:
+			switch {
+			case strings.Contains(line, "Lockable cash box") || strings.Contains(line, "LOCKABLE CASH BOX"):
+				return a.handleGameKey("1")
+			case strings.Contains(line, "Queue indicator calibration") || strings.Contains(line, "QUEUE INDICATOR CALIBRATION"):
+				return a.handleGameKey("2")
+			case strings.Contains(line, "Quiet exploit automation") || strings.Contains(line, "QUIET EXPLOIT AUTOMATION"):
+				return a.handleGameKey("3")
+			}
+		case game.TabMessages:
+			switch {
+			case strings.Contains(line, "[I] Leave unanswered"):
+				return a.handleGameKey("i")
+			case strings.Contains(line, "[1] "):
+				return a.handleGameKey("1")
+			case strings.Contains(line, "[2] "):
+				return a.handleGameKey("2")
+			case strings.Contains(line, "[3] "):
+				return a.handleGameKey("3")
+			}
+
+			// Only the side-by-side inbox actually renders a clickable message list.
+			l := a.layout()
+			if l.SideBySide && x < max(28, min(36, l.Width/3))+2 {
+				for row, text := range lines {
+					if strings.Contains(text, "INBOX") {
+						idx := y - row - 1
+						if idx >= 0 && idx < min(len(a.state.Messages), 5) {
+							_ = a.state.SelectMessage(a.state.Messages[idx].ID, time.Now())
+						}
+						return nil
+					}
 				}
 			}
 		}
 	}
 	return nil
 }
-
 func (a *App) selectMessage(delta int) {
 	if len(a.state.Messages) == 0 { return }
 	current := 0
