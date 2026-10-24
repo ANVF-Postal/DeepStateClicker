@@ -159,6 +159,10 @@ func (a *App) layout() uiLayout {
 
 // The same layout object drives both drawing and mouse hit regions.
 func (a *App) handleMouse(x, y int) tea.Cmd {
+	// gameView/menuView/introView add one row of top padding and two columns of left padding.
+	// Convert terminal coordinates back to the content coordinates used by layout().
+	x -= 2
+	y -= 1
 	l := a.layout()
 	switch a.screen {
 	case screenMenu:
@@ -184,7 +188,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		}
 		switch a.state.CurrentTab {
 		case game.TabPrint:
-			if y >= l.ExploitY && y <= l.ExploitY+1 { return a.handleGameKey("x") }
+			if y == l.ExploitY && x >= 2 && x <= 18 { return a.handleGameKey("x") }
 			if y == l.ExploitY+2 { return a.handleGameKey("s") }
 			if y == l.ExploitY+3 && a.state.EmailUnlocked { return a.handleGameKey("m") }
 		case game.TabStore:
