@@ -164,7 +164,10 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			switch {
 			case x >= 2 && x < 14: _ = a.state.OpenTab(game.TabPrint); a.message = ""
 			case x >= 14 && x < 26: _ = a.state.OpenTab(game.TabStore); a.message = ""
-			case x >= 26 && a.state.EmailUnlocked: _ = a.state.OpenTab(game.TabMessages); a.message = ""
+			case x >= 26 && a.state.EmailUnlocked:
+				_ = a.state.OpenTab(game.TabMessages)
+				if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, time.Now()) }
+				a.message = ""
 			}
 			return nil
 		}
@@ -230,7 +233,11 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 			if err := a.state.ReplyToSelected(2, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "s": _ = a.state.OpenTab(game.TabStore); a.message = ""
-	case "m", "e": if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else { a.message = "" }
+	case "m", "e":
+		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
+			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
+			a.message = ""
+		}
 	case "i":
 		if err := a.state.IgnoreSelectedMessage(now); err != nil { a.message = err.Error() } else { a.message = "You leave the message unanswered." }
 	case "b", "esc": _ = a.state.OpenTab(game.TabPrint); a.message = ""
@@ -383,9 +390,11 @@ func (a *App) storePanel(l uiLayout) string {
 	if a.state.Upgrades.ExpandedCashCapacity { b.WriteString(okStyle.Render("[1] LOCKABLE CASH BOX — INSTALLED")+"\n") } else {
 		b.WriteString(fmt.Sprintf("  %s Lockable cash box — $%s; capacity to $2,500",selectedStyle.Render("[1]"),money(game.CapacityUpgradeCost))+"\n")
 	}
+	b.WriteString("\n")
 	if a.state.Upgrades.WindowCalibration { b.WriteString(okStyle.Render("[2] QUEUE INDICATOR CALIBRATION — INSTALLED")+"\n") } else {
 		b.WriteString("  "+selectedStyle.Render("[2]")+" Queue indicator calibration — $15.00; wider window\n")
 	}
+	b.WriteString("\n")
 	if a.state.Upgrades.PrintAutomation { b.WriteString(okStyle.Render("[3] QUIET EXPLOIT AUTOMATION — INSTALLED")+"\n") } else {
 		b.WriteString(fmt.Sprintf("  %s Quiet exploit automation — $%s; queues automatically\n",selectedStyle.Render("[3]"),money(game.AutomationCost)))
 	}
