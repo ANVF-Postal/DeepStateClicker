@@ -128,7 +128,7 @@ func (a *App) layout() uiLayout {
 	w, h := a.width, a.height
 	if w < 24 { w = 24 }; if h < 12 { h = 12 }
 	sideBySide := w >= 100
-	bodyWidth := max(24, w-12)
+	bodyWidth := max(24, w-8)
 	choiceBase := 12
 	if sideBySide { bodyWidth = max(24, w-max(28,min(36,w/3))-12); choiceBase = 6 }
 	choiceY := 0
@@ -159,9 +159,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	case screenGame:
 		if y == l.TabsY {
 			switch {
-			case x >= 2 && x < 15: _ = a.state.OpenTab(game.TabPrint); a.message = ""
-			case x >= 16 && x < 29: _ = a.state.OpenTab(game.TabStore); a.message = ""
-			case x >= 30 && a.state.EmailUnlocked: _ = a.state.OpenTab(game.TabMessages); a.message = ""
+			case x >= 2 && x < 14: _ = a.state.OpenTab(game.TabPrint); a.message = ""
+			case x >= 14 && x < 26: _ = a.state.OpenTab(game.TabStore); a.message = ""
+			case x >= 26 && a.state.EmailUnlocked: _ = a.state.OpenTab(game.TabMessages); a.message = ""
 			}
 			return nil
 		}
@@ -175,7 +175,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if y == l.StoreCalibrationY { return a.handleGameKey("2") }
 			if y == l.StoreAutomationY { return a.handleGameKey("3") }
 		case game.TabMessages:
-			if y >= l.MessageFirstY && y <= l.MessageLastY {
+			if y >= l.MessageFirstY && y <= l.MessageLastY && (!l.SideBySide || x < max(28,min(36,l.Width/3))) {
 				idx := y-l.MessageFirstY
 				if idx >= 0 && idx < min(len(a.state.Messages),5) {
 					_ = a.state.SelectMessage(a.state.Messages[idx].ID, time.Now())
