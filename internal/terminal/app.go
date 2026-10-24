@@ -316,8 +316,16 @@ func (a *App) gameView() string {
 	var labels []string
 	for _, tab := range tabs {
 		label := string(tab)
-		if tab == game.TabMessages && unreadCount(a.state.Messages)>0 { label += fmt.Sprintf(" !%d",unreadCount(a.state.Messages)) }
-		if tab == a.state.CurrentTab { labels=append(labels,selectedStyle.Render("["+label+"]")) } else { labels=append(labels,labelStyle.Render(" "+label+" ")) }
+		unread := unreadCount(a.state.Messages)
+		urgent := a.state.ITSuspicion >= 4 || (a.state.PendingReplyTicks > 0 && a.state.PendingReplyTicks <= 2)
+		if tab == game.TabMessages && unread > 0 {
+			label += fmt.Sprintf(" !%d", unread)
+			if urgent {
+				if a.state.Tick%2 == 0 { labels = append(labels, dangerStyle.Render("["+label+"]")) } else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
+			} else if a.state.Tick%2 == 0 {
+				labels = append(labels, selectedStyle.Render("["+label+"]"))
+			} else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
+		} else if tab == a.state.CurrentTab { labels=append(labels,selectedStyle.Render("["+label+"]")) } else { labels=append(labels,labelStyle.Render(" "+label+" ")) }
 	}
 	b.WriteString("\n"+strings.Join(labels,"     ")+"\n")
 	b.WriteString(lineStyle.Render(strings.Repeat("─",max(20,l.Width-4)))+"\n")
@@ -347,7 +355,7 @@ func (a *App) printPanel(l uiLayout) string {
 	if progress < 0 { progress=0 }; if progress > width { progress=width }
 	bar := strings.Repeat("━",progress)+strings.Repeat("─",width-progress)
 	marker := "▶"
-	if a.state.Batch.WindowOpen { marker = okStyle.Render("◆") }
+	if a.state.Batch.WindowOpen { marker = "◆" }
 	if progress < width { runes := []rune(bar); runes[progress] = []rune(marker)[0]; bar = string(runes) }
 	b.WriteString("  "+lineStyle.Render(bar)+"\n")
 	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%",a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n\n")
