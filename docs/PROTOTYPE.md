@@ -7,7 +7,7 @@ A Federal Reserve employee has discovered an anomaly in a printing process. The 
 ## Core loop
 
 1. The title screen leads to a short preamble establishing the anomaly and the already-prepared exploit.
-2. A batch progresses through a continuous queue cycle while the application is open.
+2. A batch progresses through a roughly one-minute queue cycle while the application is open. The exploit window appears early in the cycle.
 3. A brief visual opportunity appears inside that cycle. The player may queue one or more extra dollar instructions while the window is open.
 4. The batch completes later. Only then does the cash-on-hand balance and total printed amount change.
 5. A missed opportunity is not a failure screen; the ordinary queue continues and another batch follows.
