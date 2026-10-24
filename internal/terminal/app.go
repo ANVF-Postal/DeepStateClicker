@@ -149,10 +149,15 @@ func (a *App) layout() uiLayout {
 	} else if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
 		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
 	}
+	// The cash panel can gain a row when its values wrap at narrower widths.
+	// Measure the rendered panel instead of assuming a fixed vertical position.
+	cashHeight := lipgloss.Height(a.cashPanelView(w))
+	tabsY := 5 + cashHeight
+	panelY := tabsY + 2
 	return uiLayout{
-		Width:w, Height:h, TabsY:8, ContentY:12,
-		ExploitY:15, StoreCapacityY:12, StoreCalibrationY:14, StoreAutomationY:16,
-		MessageFirstY:11, MessageLastY:messageLastY-2, MessageChoiceFirstY:choiceY-2, TickerY:h-2,
+		Width:w, Height:h, TabsY:tabsY, ContentY:panelY,
+		ExploitY:panelY+5, StoreCapacityY:panelY+2, StoreCalibrationY:panelY+4, StoreAutomationY:panelY+6,
+		MessageFirstY:panelY+1, MessageLastY:messageLastY-2+(panelY-11), MessageChoiceFirstY:choiceY-2+(panelY-11), TickerY:h-2,
 		SideBySide:sideBySide,
 	}
 }
@@ -168,9 +173,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	case screenMenu:
 		// Menu rows are derived from the menu's top padding and title block.
 		switch y {
-		case 6: a.menu = 0; return a.chooseMenu()
-		case 7: a.menu = 1; return a.chooseMenu()
-		case 8: a.menu = 2; return a.chooseMenu()
+		case 8: a.menu = 0; return a.chooseMenu()
+		case 9: a.menu = 1; return a.chooseMenu()
+		case 10: a.menu = 2; return a.chooseMenu()
 		}
 	case screenIntro:
 		if y >= 6 { a.screen, a.message = screenGame, ""; return tea.Batch(tick(), uiPulse()) }
@@ -331,11 +336,7 @@ func (a *App) gameView() string {
 	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20,l.Width-4)))+"\n")
 	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk))+"\n")
 	b.WriteString("\n")
-	cashPanel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(muted).Padding(0,2).Width(max(20,min(l.Width-6,60)))
-	cash := labelStyle.Render("CASH ON HAND")+"  "+lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand))+
-		labelStyle.Render(" / $"+money(a.state.CashCapacity))+"    "+labelStyle.Render("TOTAL PRINTED ")+lipgloss.NewStyle().Foreground(ink).Render("$"+money(a.state.TotalPrinted))+
-		"\n"+labelStyle.Render("EST. NET WORTH  ")+lipgloss.NewStyle().Foreground(ink).Bold(true).Render("$"+money(a.state.EstimatedNetWorth))
-	b.WriteString(cashPanel.Render(cash)+"\n")
+	b.WriteString(a.cashPanelView(l.Width)+"\n")
 	tabs := []game.Tab{game.TabPrint,game.TabStore}
 	if a.state.EmailUnlocked { tabs = append(tabs,game.TabMessages) }
 	var labels []string
@@ -371,6 +372,14 @@ func (a *App) gameView() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#B8A46E")).Width(max(12,l.Width-4)).MaxHeight(1).Render(ticker)+"\n")
 	b.WriteString(labelStyle.Render("X/P exploit  S store  M messages  1–3 choose  I ignore  V save  H help  Q quit"))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
+}
+
+
+func (a *App) cashPanelView(width int) string {
+	cash := labelStyle.Render("CASH ON HAND")+"  "+lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand))+
+		labelStyle.Render(" / $"+money(a.state.CashCapacity))+"    "+labelStyle.Render("TOTAL PRINTED ")+lipgloss.NewStyle().Foreground(ink).Render("$"+money(a.state.TotalPrinted))+
+		"\n"+labelStyle.Render("EST. NET WORTH  ")+lipgloss.NewStyle().Foreground(ink).Bold(true).Render("$"+money(a.state.EstimatedNetWorth))
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(muted).Padding(0,2).Width(max(20,min(width-6,60))).Render(cash)
 }
 
 func (a *App) printPanel(l uiLayout) string {
