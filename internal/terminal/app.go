@@ -611,11 +611,9 @@ func (a *App) newsStripView(width int) string {
 		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
 	}
 	runes := []rune(a.newsHeadline)
-	if len(runes) <= width { return lipgloss.NewStyle().Foreground(ink).Width(width).Render(a.newsHeadline) }
-	offset := int(a.uiFrame/2) % max(1, len(runes))
 	loop := append(append([]rune{}, runes...), append([]rune("   •   "), runes...)...)
-	start := offset % max(1, len(loop))
-	visible := string(loop[start:])
+	offset := int(a.uiFrame) % max(1, len(loop))
+	visible := string(loop[offset:])
 	if len([]rune(visible)) > width { visible = string([]rune(visible)[:width]) }
 	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(visible)
 }
