@@ -24,7 +24,7 @@ go vet ./...
 
 ## Current loop
 
-- The printer queue runs continuously while the game is open.
+- The printer queue runs continuously while the game is open. Each batch currently takes about one active minute, with the exploit opportunity early in the cycle.
 - A small visual opportunity appears during each batch. Press `x`, `p`, Space, or click the illuminated `INJECT` control to queue an extra dollar instruction.
 - The instruction does not pay immediately. Cash is added only when that batch completes.
 - Miss the window and the ordinary batch completes without an extra instruction.
