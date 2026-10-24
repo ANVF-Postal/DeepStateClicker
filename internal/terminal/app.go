@@ -172,11 +172,11 @@ func plainViewLines(view string) []string {
 }
 
 func (a *App) handleMouse(x, y int) tea.Cmd {
-	// Mouse Y is landing two rows below the corresponding rendered line on
-	// the intro and game screens. Normalize it once before matching the rendered
-	// view; the menu already aligns and must remain unchanged.
+	// The reported hitbox offset worsened each time Y was subtracted, so the
+	// rendered-line lookup needs the opposite correction on intro/game screens.
+	// Keep the menu unchanged because its mouse coordinates already align.
 	if a.screen != screenMenu {
-		y -= 2
+		y++
 	}
 
 	// Hit testing uses the actual rendered view, including its padding and any
