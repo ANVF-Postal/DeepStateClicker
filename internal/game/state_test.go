@@ -65,6 +65,41 @@ func TestMessageReplyArrivesAfterActiveTicksAndCharacterRemembers(t *testing.T) 
 	if s.ITSuspicion!=1 { t.Fatalf("character should remember dismissive reply, suspicion=%d",s.ITSuspicion) }
 }
 
+func TestDiscrepancyMessageWaitsForThresholdAndRandomActiveDelay(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.TotalPrinted = 900
+	for i := 0; i < 20; i++ {
+		s.Advance(now.Add(time.Duration(i+1) * time.Second))
+	}
+	if s.EmailUnlocked || s.PendingFirstMessageTicks != 0 {
+		t.Fatal("message should not be scheduled before the discrepancy threshold")
+	}
+
+	s.TotalPrinted = 1_000
+	s.Advance(now.Add(21 * time.Second))
+	if s.EmailUnlocked {
+		t.Fatal("message should not arrive immediately when the threshold is crossed")
+	}
+	if s.PendingFirstMessageTicks < 11 || s.PendingFirstMessageTicks > 44 {
+		t.Fatalf("expected randomized active-time countdown, got %d", s.PendingFirstMessageTicks)
+	}
+	initialDelay := s.PendingFirstMessageTicks
+	for i := 0; i < initialDelay-1; i++ {
+		s.Advance(now.Add(time.Duration(22+i) * time.Second))
+		if s.EmailUnlocked {
+			t.Fatal("message arrived before its countdown completed")
+		}
+	}
+	s.Advance(now.Add(time.Duration(22+initialDelay) * time.Second))
+	if !s.EmailUnlocked || len(s.Messages) != 1 {
+		t.Fatalf("expected discrepancy message after countdown, unlocked=%v messages=%d", s.EmailUnlocked, len(s.Messages))
+	}
+	if s.Batch.Progress == 0 {
+		t.Fatal("message timing should not require a print-cycle boundary")
+	}
+}
+
 func TestSimulationDoesNotAdvanceAfterRunEnds(t *testing.T) {
 	s:=NewState(time.Unix(1,0))
 	s.Status=RunDead
