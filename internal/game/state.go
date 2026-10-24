@@ -97,6 +97,7 @@ type State struct {
 	Messages []Message `json:"messages,omitempty"`
 	SelectedMessageID string `json:"selected_message_id,omitempty"`
 	PendingReplyTicks int `json:"pending_reply_ticks,omitempty"`
+	PendingFirstMessageTicks int `json:"pending_first_message_ticks,omitempty"`
 	ITPatience int `json:"it_patience"`
 	ITSuspicion int `json:"it_suspicion"`
 	ITReplyCount int `json:"it_reply_count"`
@@ -256,10 +257,19 @@ func (s *State) Advance(now time.Time) {
 		s.Batch.WindowOpen = false
 		s.Batch.WindowMissed = false
 	}
-	if s.TotalPrinted >= 1_000 && !s.EmailUnlocked {
-		s.EmailUnlocked = true
-		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
-		s.addEvent("message_received", "A new message has arrived in your internal inbox.", now)
+	// The first discrepancy becomes visible only after enough unrecorded cash
+	// has actually cleared a batch. Delivery is then delayed by a seeded,
+	// active-time countdown rather than tied to the next batch boundary.
+	if s.TotalPrinted >= 1_000 && !s.EmailUnlocked && s.PendingFirstMessageTicks == 0 {
+		s.PendingFirstMessageTicks = 12 + s.randomInt(34) // 12–45 active seconds
+	}
+	if s.PendingFirstMessageTicks > 0 {
+		s.PendingFirstMessageTicks--
+		if s.PendingFirstMessageTicks == 0 && !s.EmailUnlocked && s.TotalPrinted >= 1_000 {
+			s.EmailUnlocked = true
+			s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
+			s.addEvent("message_received", "A new message has arrived in your internal inbox.", now)
+		}
 	}
 	if s.Tick%30 == 0 { s.Risk = clamp(s.Risk+1, 0, 100) }
 	s.advanceMail(now)
