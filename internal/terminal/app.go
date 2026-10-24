@@ -443,7 +443,7 @@ func (a *App) printPanel(l uiLayout) string {
 	b.WriteString(labelStyle.Render("CASH ON HAND  "))
 	b.WriteString(lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand)))
 	b.WriteString(labelStyle.Render(" / CAPACITY $"+money(a.state.CashCapacity))+"\n")
-	b.WriteString(labelStyle.Render("TOTAL PRINTED  $"+money(a.state.TotalPrinted)+"    EST. NET WORTH  $"+money(a.state.EstimatedNetWorth))+"\n\n")
+	b.WriteString(labelStyle.Render("TOTAL PRINTED  $"+money(a.state.TotalPrinted)+"    EST. NET WORTH  $"+money(a.state.EstimatedNetWorth))+"\n")
 	b.WriteString(titleStyle.Render("PRINT WINDOW")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d", a.state.Batch.Number))+"\n")
 	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY OPEN")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n")
 	} else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n") }
@@ -463,7 +463,7 @@ func (a *App) printPanel(l uiLayout) string {
 	if a.state.Batch.LastOutcome != "" && !strings.Contains(outcome, "queue moved on") && !strings.Contains(outcome, "no instruction was sent") {
 		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
 	}
-	b.WriteString("\n"+titleStyle.Render("UPGRADES")+"\n")
+	b.WriteString(titleStyle.Render("UPGRADES")+"\n")
 	if a.state.Upgrades.ExpandedCashCapacity { b.WriteString(okStyle.Render("[1] CASH CAPACITY — INSTALLED")+"\n")
 	} else { b.WriteString(selectedStyle.Render("[1]")+" "+labelStyle.Render("Lockable cash box — $"+money(game.CapacityUpgradeCost))+"\n") }
 	if a.state.Upgrades.WindowCalibration { b.WriteString(okStyle.Render("[2] QUEUE CALIBRATION — INSTALLED")+"\n")
