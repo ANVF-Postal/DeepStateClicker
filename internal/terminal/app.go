@@ -91,7 +91,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l":
 			if a.screen == screenMenu {
 				a.loadGame()
-				if a.screen == screenGame { return a, tick() }
+				if a.screen == screenGame { return a, tea.Batch(tick(), uiPulse()) }
 			}
 		case "q":
 			if a.screen == screenMenu { return a, tea.Quit }
@@ -184,7 +184,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		}
 		switch a.state.CurrentTab {
 		case game.TabPrint:
-			if y >= l.ExploitY && y <= l.ExploitY+3 { return a.handleGameKey("x") }
+			if y >= l.ExploitY && y <= l.ExploitY+1 { return a.handleGameKey("x") }
 			if y == l.ExploitY+2 { return a.handleGameKey("s") }
 			if y == l.ExploitY+3 && a.state.EmailUnlocked { return a.handleGameKey("m") }
 		case game.TabStore:
