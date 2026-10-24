@@ -220,6 +220,7 @@ func (s *State) Advance(now time.Time) {
 	s.Batch.Progress++
 	s.Batch.WindowOpen = false
 	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
+	// Calibration improves recognition, but only adds a very small amount of time.
 	if s.Upgrades.WindowCalibration { windowEnd++ }
 	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
 		s.Batch.WindowOpen = true
@@ -263,7 +264,8 @@ func (s *State) Advance(now time.Time) {
 	if s.Tick%30 == 0 { s.Risk = clamp(s.Risk+1, 0, 100) }
 	s.advanceMail(now)
 	// Net worth is an estimate, not spendable cash.
-	s.EstimatedNetWorth = s.CashOnHand + s.TotalPrinted/20
+	// No assets exist yet, so net worth is exactly the cash currently held.
+	s.EstimatedNetWorth = s.CashOnHand
 	if s.Tick%75 == 0 && s.NewsIndex < len(NewsHeadlines)-1 { s.NewsIndex++ }
 	s.UpdatedAt = now
 }
