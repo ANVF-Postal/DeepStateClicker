@@ -197,7 +197,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	case screenIntro:
 		if y >= 3 {
 			a.screen, a.message = screenGame, ""
-			return a, tea.Batch(tick(), uiPulse())
+			return tea.Batch(tick(), uiPulse())
 		}
 	case screenGame:
 		// The tab strip is identified by its rendered labels, not a fixed row.
