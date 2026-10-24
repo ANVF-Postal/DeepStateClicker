@@ -172,11 +172,11 @@ func plainViewLines(view string) []string {
 }
 
 func (a *App) handleMouse(x, y int) tea.Cmd {
-	// The game and intro screens have one additional top row between the
-	// terminal's mouse coordinates and the rendered view. Keep menu coordinates
-	// unchanged (they already align), and normalize the other screens once here.
+	// Mouse Y is landing two rows below the corresponding rendered line on
+	// the intro and game screens. Normalize it once before matching the rendered
+	// view; the menu already aligns and must remain unchanged.
 	if a.screen != screenMenu {
-		y--
+		y -= 2
 	}
 
 	// Hit testing uses the actual rendered view, including its padding and any
