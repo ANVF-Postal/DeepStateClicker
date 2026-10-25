@@ -130,6 +130,7 @@ type State struct {
 	Risk int `json:"risk"`
 	Tick int64 `json:"tick"`
 	UptimeSeconds int64 `json:"uptime_seconds,omitempty"`
+	UptimeInitialized bool `json:"uptime_initialized,omitempty"`
 	EmailUnlocked bool `json:"email_unlocked"`
 	EmailRead bool `json:"email_read"`
 	Messages []Message `json:"messages,omitempty"`
@@ -175,6 +176,7 @@ func NewState(now time.Time) State {
 		RandomState: uint64(now.UnixNano()) ^ 0x9e3779b97f4a7c15,
 		CreatedAt: now,
 		UpdatedAt: now,
+		UptimeInitialized: true,
 		Batch: BatchState{Number: 1, Progress: 0, LastOutcome: "Routine batch cycle active."},
 		Modules: NewModuleState(),
 		Events: []Event{{AtTick: 0, Kind: "discovery", Text: "The discrepancy is real. The exploit is already in place; the queue is moving.", At: now}},
@@ -195,7 +197,10 @@ func (s *State) Normalize() {
 	}
 	if s.ITPatience == 0 && len(s.Messages) == 0 { s.ITPatience = 3 }
 	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
-	if s.UptimeSeconds == 0 && s.Tick > 0 { s.UptimeSeconds = s.Tick }
+	if !s.UptimeInitialized {
+		if s.UptimeSeconds == 0 { s.UptimeSeconds = s.Tick }
+		s.UptimeInitialized = true
+	}
 	if len(s.Modules) == 0 { s.Modules = NewModuleState() }
 	for i := range s.Modules {
 		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
@@ -230,6 +235,7 @@ func startModuleBoot(s *State, m *ModuleState) {
 	// 4–10 active seconds; Advance pauses entirely while the application is closed.
 	duration := 4 + s.randomInt(7)
 	m.Booting = true
+	m.ActivatedFlash = false
 	m.BootTicksTotal = duration
 	m.BootTicksRemaining = duration
 }
