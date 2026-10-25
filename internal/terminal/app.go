@@ -712,139 +712,88 @@ func (a *App) upgradesPanel(l uiLayout) string {
 }
 
 func (a *App) rackPanel(l uiLayout) string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("MAIN  /  HARDWARE RACK")+"\n")
+	var out strings.Builder
+	out.WriteString(titleStyle.Render("MAIN  /  HARDWARE RACK")+"\n")
 	installed := a.installedModules()
-	b.WriteString(labelStyle.Render(fmt.Sprintf("BAYS IN USE: %d  ·  RACK CAPACITY: UNLIMITED",len(installed)))+"\n")
-	leftWidth := max(24,min(38,l.Width/3))
-	rightWidth := max(28,l.Width-leftWidth-7)
-	visibleLeft := max(2,(l.Height-14)/3)
-	visibleRight := max(1,(l.Height-20)/6)
-	var left,right strings.Builder
-	start := a.rackLeftScroll
-	end := min(len(game.ModuleCatalog),start+visibleLeft)
-	for i:=start;i<end;i++ {
-		spec:=game.ModuleCatalog[i]
-		m:=a.state.Module(spec.ID)
-		status:="NEW"
-		if m!=nil && m.Level>0 { status=fmt.Sprintf("REV %02d",m.Level); if m.Installed { status+=" IN RACK" } else { status+=" STORED" } }
-		if spec.ID=="obfuscation" && a.state.Risk<25 { status="LOCKED" }
-		name:=truncate(fmt.Sprintf("%s %s",map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],spec.Name),leftWidth-4)
-		style:=lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
-		if i==a.selectedUpgrade { style=style.Bold(true).Underline(true) }
-		left.WriteString(style.Render(name)+"\n")
-		left.WriteString(labelStyle.Render("  "+status)+"\n")
-	}
-	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth,max(4,panelLineLimit(l,a.message!="")-2))
-	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),a.rackRightScroll,max(1,(l.Height-20)/6)))+"\n")
-	startR:=a.rackRightScroll
-	endR:=min(len(installed),startR+visibleRight)
-	for i:=startR;i<endR;i++ {
-		m:=installed[i]
-		name:=m.ID
-		color:=teal
-		for _,spec:=range game.ModuleCatalog { if spec.ID==m.ID { name=spec.Name; color=lipgloss.Color(spec.Color); break } }
-		if m.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER"; color=orange }
-		blockWidth:=max(20,min(rightWidth-3,44))
-		inner:=blockWidth-2
-		remove:=""
-		if !m.Jammed { remove="[X]" }
-		top:= "┌"+padCells(" "+truncate(name,inner-7),remove,inner)+"┐"
-		rev:=fmt.Sprintf(" REV %02d",m.Level)
-		gain:=""
-		if !m.Jammed { gain=moduleGain(m.ID,m.Level) }
-		revLine:="│"+padCells(rev,gain,inner)+"│"
-		card:=[]string{top,revLine}
-		if m.Booting {
-			card=append(card,"│"+padCells(" "+bootMessage(m),"",inner)+"│")
-			barWidth:=max(6,inner-2)
-			done:=m.BootTicksTotal-m.BootTicksRemaining
-			filled:=min(barWidth,max(0,done*barWidth/max(1,m.BootTicksTotal)))
-			bar:="["+strings.Repeat("█",filled)+strings.Repeat("·",barWidth-filled)+"]"
-			card=append(card,"│"+padCells(" "+bar,"",inner)+"│")
-		} else if m.ActivatedFlash {
-			barWidth:=max(6,inner-2)
-			bar:="["+strings.Repeat("█",barWidth)+"]"
-			activated:="ACTIVATED!"
-			card=append(card,"│"+strings.Repeat(" ",max(0,(inner-len(activated))/2))+activated+strings.Repeat(" ",max(0,inner-len(activated)-(inner-len(activated))/2))+"│")
-			card=append(card,"│"+padCells(" "+bar,"",inner)+"│")
-		} else if !m.Jammed {
-			flicker:="*  *  *  *  *"
-			if a.uiFrame%7<3 { flicker="* *   *  * *" }
-			card=append(card,"│"+padCells(" "+flicker,"",inner)+"│")
-		} else { card=append(card,"│"+padCells(" JAMMED · SPECIALIST REMOVAL","",inner)+"│") }
-		card=append(card,"└"+strings.Repeat("─",inner)+"┘")
-		st:=lipgloss.NewStyle().Foreground(color)
-		if i==a.selectedRackModule && a.rackFocusRight { st=st.Bold(true) }
-		for row,line:=range card {
-			if row==1 {
-				// Keep revision and effect text visually separate from the module's color.
-				right.WriteString(labelStyle.Render(card[row])+"\n")
-			} else if m.ActivatedFlash && row==2 { right.WriteString(okStyle.Render(line)+"\n")
-			} else if row==len(card)-2 && (m.Booting || m.ActivatedFlash) {
-				right.WriteString(okStyle.Render(line)+"\n")
-			} else { right.WriteString(st.Render(line)+"\n") }
+	out.WriteString(labelStyle.Render(fmt.Sprintf("BAYS IN USE: %d  ·  RACK CAPACITY: UNLIMITED", len(installed)))+"\n")
+	leftWidth, rightWidth := paneWidths(l)
+	paneHeight := max(4, panelLineLimit(l, a.message != "")-2)
+	visibleLeft := max(1, paneHeight-2)
+	visibleRight := max(1, (paneHeight-9)/5)
+	var left, right strings.Builder
+	start := min(a.rackLeftScroll, max(0, len(game.ModuleCatalog)-visibleLeft))
+	end := min(len(game.ModuleCatalog), start+visibleLeft)
+	for i := start; i < end; i++ {
+		spec := game.ModuleCatalog[i]
+		m := a.state.Module(spec.ID)
+		status, revision := "NEW", ""
+		if m != nil && m.Level > 0 {
+			revision = fmt.Sprintf(" Rev %02d", m.Level)
+			switch { case m.Booting: status = "BOOTING"; case m.Installed: status = "IN RACK"; default: status = "REMOVED" }
 		}
-
+		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
+		marker := " "
+		if i == a.selectedUpgrade { marker = "›" }
+		nameWidth := max(8, leftWidth-4-lipgloss.Width(revision)-lipgloss.Width(status)-2)
+		name := truncate(marker+" "+spec.Name, nameWidth)
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
+		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
+		left.WriteString(padCells(style.Render(name)+labelStyle.Render(revision), labelStyle.Render(status), leftWidth-2)+"\n")
+	}
+	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed), a.rackRightScroll, visibleRight))+"\n")
+	startR := min(a.rackRightScroll, max(0, len(installed)-visibleRight))
+	endR := min(len(installed), startR+visibleRight)
+	for i := startR; i < endR; i++ {
+		m := installed[i]
+		name, color := m.ID, teal
+		for _, spec := range game.ModuleCatalog { if spec.ID == m.ID { name = spec.Name; color = lipgloss.Color(spec.Color); break } }
+		if m.ID == "legacy_controller" { name, color = "LEGACY PRINT CONTROLLER", orange }
+		blockWidth := max(20, min(rightWidth-2, 42))
+		inner := blockWidth-2
+		remove := ""
+		if !m.Jammed { remove = "[X]" }
+		top := "┌"+padCells(" "+truncate(name, inner-7), remove, inner)+"┐"
+		revLine := "│"+padCells(fmt.Sprintf(" REV %02d", m.Level), moduleGain(m.ID, m.Level), inner)+"│"
+		card := []string{top, revLine}
+		if m.Booting {
+			card = append(card, "│"+padCells(" "+bootMessage(m), "", inner)+"│")
+			barWidth := max(6, inner-2)
+			done := m.BootTicksTotal-m.BootTicksRemaining
+			filled := min(barWidth, max(0, done*barWidth/max(1, m.BootTicksTotal)))
+			card = append(card, "│"+padCells(" ["+strings.Repeat("█", filled)+strings.Repeat("·", barWidth-filled)+"]", "", inner)+"│")
+		} else if m.ActivatedFlash {
+			card = append(card, "│"+padCells(" ACTIVATED!", "", inner)+"│")
+			card = append(card, "│"+padCells(" ["+strings.Repeat("█", max(6, inner-2))+"]", "", inner)+"│")
+		} else if m.Jammed {
+			card = append(card, "│"+padCells(" JAMMED · SPECIALIST REMOVAL", "", inner)+"│")
+		} else {
+			flicker := "*  *  *  *  *"
+			if a.uiFrame%7 < 3 { flicker = "* *   *  * *" }
+			card = append(card, "│"+padCells(" "+flicker, "", inner)+"│")
+		}
+		card = append(card, "└"+strings.Repeat("─", inner)+"┘")
+		style := lipgloss.NewStyle().Foreground(color)
+		if i == a.selectedRackModule && a.rackFocusRight { style = style.Bold(true) }
+		for row, line := range card {
+			switch {
+			case row == 1: right.WriteString(labelStyle.Render(line)+"\n")
+			case m.ActivatedFlash && row == 2: right.WriteString(okStyle.Render(line)+"\n")
+			case row == len(card)-2 && (m.Booting || m.ActivatedFlash): right.WriteString(okStyle.Render(line)+"\n")
+			default: right.WriteString(style.Render(line)+"\n")
+			}
+		}
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
 	}
-	inner:=max(16,min(rightWidth-5,36))-2
-	right.WriteString(labelStyle.Render("┌"+strings.Repeat("─",inner)+"┐")+"\n")
-	right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY","",inner)+"│")+"\n")
-	right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n")
-	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
+	emptyWidth := max(16, min(rightWidth-4, 34))-2
+	right.WriteString(labelStyle.Render("┌"+strings.Repeat("─", emptyWidth)+"┐")+"\n")
+	right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY", "", emptyWidth)+"│")+"\n")
+	right.WriteString(labelStyle.Render("└"+strings.Repeat("─", emptyWidth)+"┘")+"\n")
+	if endR < len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
 	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK"))
-	rightPane:=windowPane("RACK BUS",right.String(),rightWidth,max(4,panelLineLimit(l,a.message!="")-2))
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(leftPane),lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightPane)))
-	return b.String()
-}
-
-func windowPane(title, content string, width, height int) string {
-	width = max(18, width)
-	height = max(3, height)
-	inner := width-2
-	topLabel := "┌─ "+title+" "
-	top := topLabel+strings.Repeat("─", max(0, width-lipgloss.Width(topLabel)-1))+"┐"
-	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-	contentHeight := height-2
-	if len(lines) > contentHeight { lines = lines[:contentHeight] }
-	for len(lines) < contentHeight { lines = append(lines, "") }
-	var out strings.Builder
-	out.WriteString(labelStyle.Render(top)+"\n")
-	for _, line := range lines {
-		if lipgloss.Width(line) > inner { line = truncate(ansiSequences.ReplaceAllString(line, ""), inner) }
-		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
-	}
-	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
+	leftPane := windowPane("AVAILABLE MODULES", left.String(), leftWidth, paneHeight)
+	rightPane := windowPane("RACK BUS", right.String(), rightWidth, paneHeight)
+	out.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane))
 	return out.String()
-}
-
-func paneWidths(l uiLayout) (int, int) {
-	available := max(40, l.Width-4) // gameView adds two columns of padding on each side.
-	left := max(24, min(38, available/3))
-	right := max(18, available-left-1)
-	return left, right
-}
-
-func panelLineLimit(l uiLayout, hasMessage bool) int {
-	n := max(4, l.TickerY-l.ContentY-2)
-	if hasMessage { n-- }
-	return n
-}
-
-func rackScrollbar(total,start,visible int) string {
-	const height=6
-	if total<=visible { return "[══════]" }
-	thumb:=max(1,height*visible/total)
-	pos:=min(height-thumb,max(0,start*height/max(1,total-visible)))
-	return "["+strings.Repeat("░",pos)+strings.Repeat("█",thumb)+strings.Repeat("░",height-pos-thumb)+"]"
-}
-
-func padCells(left,right string,width int) string {
-	left=truncate(left,max(0,width-lipgloss.Width(right)))
-	gap:=max(1,width-lipgloss.Width(left)-lipgloss.Width(right))
-	if lipgloss.Width(left)+lipgloss.Width(right)>=width { gap=0 }
-	return left+strings.Repeat(" ",gap)+right+strings.Repeat(" ",max(0,width-lipgloss.Width(left)-lipgloss.Width(right)-gap))
 }
 
 func (a *App) storePanel(l uiLayout) string {
