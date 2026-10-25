@@ -337,7 +337,7 @@ func (s *State) Advance(now time.Time) {
 	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { windowEnd++ }
 	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
 		s.Batch.WindowOpen = true
-		if (moduleLevel(s, "auto_injector") > 0 || s.Upgrades.PrintAutomation) && s.Batch.QueuedDollars == 0 && s.CashOnHand+PrintAmount <= s.CashCapacity {
+		if (moduleLevel(s, "auto_injector") > 0 || s.Upgrades.PrintAutomation) && s.Batch.QueuedDollars == 0 {
 			s.Batch.QueuedDollars = 1
 			s.Batch.LastOutcome = "The calibrated exploit queued an instruction automatically."
 		}
