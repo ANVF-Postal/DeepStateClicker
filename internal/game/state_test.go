@@ -191,11 +191,16 @@ func TestRemovedModuleCanBeReinstalledWithoutLosingRevision(t *testing.T) {
 	now := time.Unix(1, 0)
 	s := NewState(now)
 	s.CashOnHand = 10_000
-	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
-	if err := s.RemoveModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := s.BuyOrUpgradeModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	if err := s.RemoveModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	s.Normalize()
+	m := s.Module("queue_calibration")
+	if m == nil || m.Installed || s.Upgrades.WindowCalibration {
+		t.Fatalf("removed module should remain disabled after normalization, got module=%#v legacyFlag=%v",m,s.Upgrades.WindowCalibration)
+	}
 	cashAfterPurchase := s.CashOnHand
-	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
-	m := s.Module("window_expansion")
+	if err := s.BuyOrUpgradeModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	m = s.Module("queue_calibration")
 	if m == nil || !m.Installed || m.Level != 1 {
 		t.Fatalf("expected same revision to be reinstalled, got %#v", m)
 	}
