@@ -264,6 +264,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			switch {
 			case strings.Contains(line, "[U] UPGRADES"): a.mainView = "upgrades"; a.selectedUpgrade = 0
 			case strings.Contains(line, "[R] HARDWARE RACK"): a.mainView = "rack"; a.rackFocusRight = false
+			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
 			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
 			case a.mainView == "upgrades" && strings.Contains(line, "BUY"): a.activateMainSelection()
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
@@ -632,6 +633,9 @@ func (a *App) upgradesPanel(l uiLayout) string {
 	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5",spec.Suspicion))+"\n")
 	if spec.ID=="obfuscation" && a.state.Risk<25 {
 		right.WriteString(dangerStyle.Render("REQUIREMENT: operation scrutiny 25+")+"\n")
+	} else if m!=nil && m.Level>0 && !m.Installed {
+		right.WriteString(labelStyle.Render("MODULE REMOVED FROM RACK")+"\n\n")
+		right.WriteString(selectedStyle.Render("[ENTER / B] REINSTALL MODULE")+"\n")
 	} else if level>=spec.MaxLevel {
 		right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
 	} else {
@@ -695,7 +699,7 @@ func (a *App) rackPanel(l uiLayout) string {
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
 	}
 	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
-	right.WriteString("\n"+labelStyle.Render("ENTER: acquire/remove · [U] UPGRADES · [B] BACK")+"\n")
+	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK")+"\n")
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),lipgloss.NewStyle().Width(max(22,l.Width-leftWidth-5)).PaddingLeft(1).Render(right.String())))
 	return b.String()
 }
