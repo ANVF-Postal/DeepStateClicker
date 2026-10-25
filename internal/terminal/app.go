@@ -84,8 +84,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Button == tea.MouseButtonWheelUp { delta = -1 }
 			if a.mouseOnTabRow(msg.Y) { a.cycleTab(delta) } else if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
 				leftWidth:=max(24,min(38,a.layout().Width/3))
-				if msg.X < leftWidth+4 { a.rackLeftScroll=max(0,min(max(0,len(game.ModuleCatalog)-2),a.rackLeftScroll+delta)) } else {
-					visible:=max(1,(a.layout().Height-20)/6)
+				if msg.X < leftWidth+4 { visibleLeft:=max(1,paneHeight-2)
+					a.rackLeftScroll=max(0,min(max(0,len(game.ModuleCatalog)-visibleLeft),a.rackLeftScroll+delta)) } else {
+					paneHeight:=max(4,panelLineLimit(a.layout(),a.message!="")-2)
+					visible:=max(1,(paneHeight-9)/5)
 					a.rackRightScroll=max(0,min(max(0,len(a.installedModules())-visible),a.rackRightScroll+delta))
 				}
 			} else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.selectedUpgrade=max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade+delta)) }
@@ -266,7 +268,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 						name := mod.ID
 						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
 						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
-						if strings.Contains(line, truncate(name, max(8, min(40, len([]rune(name)))) ) && !mod.Jammed {
+						if strings.Contains(line, name) && !mod.Jammed {
 							a.selectedRackModule = i
 							a.rackFocusRight = true
 							a.activateMainSelection()
@@ -804,7 +806,7 @@ func (a *App) rackPanel(l uiLayout) string {
 	right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY", "", emptyWidth)+"│")+"\n")
 	right.WriteString(labelStyle.Render("└"+strings.Repeat("─", emptyWidth)+"┘")+"\n")
 	if endR < len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
-	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK"))
+	right.WriteString(selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"  "+labelStyle.Render("[U] UPGRADES · [B] BACK"))
 	leftPane := windowPane("AVAILABLE MODULES", left.String(), leftWidth, paneHeight)
 	rightPane := windowPane("RACK BUS", right.String(), rightWidth, paneHeight)
 	out.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane))
