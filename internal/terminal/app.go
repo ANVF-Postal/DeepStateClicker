@@ -252,24 +252,17 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				leftWidth := max(28,min(38,a.layout().Width/3))
 				if x < leftWidth+5 {
 					for i,spec := range game.ModuleCatalog { if strings.Contains(line,spec.Name) { a.selectedUpgrade=i; return nil } }
-				} else if strings.Contains(line,"[ENTER / B] BUY / UPGRADE MODULE") || strings.Contains(line,"[ENTER / B] REINSTALL MODULE") {
+				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE MODULE") || mouseWithin(line,x,"[ENTER / B] REINSTALL MODULE") {
 					return a.handleGameKey("b")
 				}
 			}
-			if a.mainView == "rack" && strings.Contains(line,"[X]") && x >= lWidthForRack(a.width)+4 {
+			if a.mainView == "rack" {
 				for i,mod := range a.installedModules() {
 					name:=mod.ID; for _,spec:=range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name } }; if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
-					if strings.Contains(line,name) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
+					if mouseWithin(line,x,"[X]") && strings.Contains(line,name) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
 				}
 			}
-			if a.mainView == "upgrades" {
-				for row, text := range lines {
-					if strings.Contains(text,"MODULE CATALOGUE") {
-						idx := (y-row-1)/2
-						if idx >= 0 && idx < len(game.ModuleCatalog) { a.selectedUpgrade = idx; return nil }
-					}
-				}
-			}
+			
 			if a.mainView == "rack" {
 				for i, spec := range game.ModuleCatalog {
 					if strings.Contains(line,spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
@@ -284,9 +277,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			switch {
 			case strings.Contains(line, "[U] UPGRADES"): a.mainView = "upgrades"; a.selectedUpgrade = 0
 			case strings.Contains(line, "[R] HARDWARE RACK") && a.hasPurchasedModule(): a.mainView = "rack"; a.rackFocusRight = false
-			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
+			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED") && mouseWithin(line,x,"[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
 			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
-			case a.mainView == "upgrades" && (strings.Contains(line, "BUY") || strings.Contains(line,"REINSTALL MODULE")): a.activateMainSelection()
+			case a.mainView == "upgrades" && mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE MODULE"): a.activateMainSelection()
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
@@ -1014,6 +1007,11 @@ func (a *App) newsStripView(width int) string {
 	visibleRunes := []rune(track)[start:]
 	if len(visibleRunes) > width { visibleRunes = visibleRunes[:width] }
 	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(string(visibleRunes))
+}
+
+func mouseWithin(line string,x int,label string) bool {
+	at:=strings.Index(line,label)
+	return at>=0 && x>=at && x<at+len(label)
 }
 
 func (a *App) mouseOnTabRow(y int) bool {
