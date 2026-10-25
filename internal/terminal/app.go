@@ -348,20 +348,26 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 
 				rightPaneStart := 3 + leftWidth
 				if x >= rightPaneStart && x < rightPaneStart+rightWidth {
+					// Reconstruct the physical bay geometry used by rackPanel.
+					// Actions are hit-tested by row and bay rectangle rather than
+					// by searching for "[X]" or "[REMOVE]" in rendered text.
+					paneInner := rightWidth-2
+					contentWidth := paneInner-1
+					cardWidth := max(20,min(contentWidth,54))
+					cardPad := max(0,(contentWidth-cardWidth)/2)
+					cardLeftX := rightPaneStart+1+cardPad
+
 					for row, paneTitle := range lines {
 						if !strings.Contains(paneTitle, "INSTALLED RACK") {
 							continue
 						}
 
-						// Match each bay by its actual rendered six-row block.
-						// Do not infer the module solely from y/6: the pane title,
-						// scrollbar, and clipping can make that fragile.
 						for visibleIndex := 0; visibleIndex < visibleRight; visibleIndex++ {
-							slotIndex := startR + visibleIndex
+							slotIndex := startR+visibleIndex
 							if slotIndex < 0 || slotIndex >= len(bays) {
 								break
 							}
-							cardStartY := row + 1 + visibleIndex*rackBayHeight
+							cardStartY := row+1+visibleIndex*rackBayHeight
 							if y < cardStartY || y >= cardStartY+rackBayHeight {
 								continue
 							}
@@ -373,7 +379,28 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 							a.selectedRackModule = slotIndex
 							a.rackFocusRight = true
 
-							if mod.Jammed && rackControlWithin(line, x, "[REMOVE]") {
+							// [X] sits in the upper-right corner of a normal
+							// module's title row. Treat the visible corner as a
+							// target, not just the three glyphs.
+							xControlRow := y == cardStartY+1
+							xControlColumn := x >= cardLeftX+cardWidth-9 && x < cardLeftX+cardWidth
+							if !mod.Jammed && xControlRow && xControlColumn {
+								if err := a.state.RemoveModule(mod.ID,time.Now()); err != nil {
+									a.message = err.Error()
+								} else {
+									a.message = mod.ID+" removed from the rack."
+								}
+								a.rackRemovalArmedModule = ""
+								a.rackRightScroll = min(a.rackRightScroll,max(0,len(a.rackBays())-visibleRight))
+								return nil
+							}
+
+							// The specialist control sits on its own row in the
+							// legacy module. Any click within the right-aligned
+							// control area on that row is routed to the button.
+							removeControlRow := y == cardStartY+4
+							removeControlColumn := x >= cardLeftX+cardWidth-20 && x < cardLeftX+cardWidth
+							if mod.Jammed && removeControlRow && removeControlColumn {
 								if a.rackRemovalArmedModule == mod.ID {
 									if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
 										a.message = err.Error()
@@ -388,16 +415,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 								}
 								return nil
 							}
-							if !mod.Jammed && rackControlWithin(line, x, "[X]") {
-								if err := a.state.RemoveModule(mod.ID, time.Now()); err != nil {
-									a.message = err.Error()
-								} else {
-									a.message = mod.ID+" removed from the rack."
-								}
-								a.rackRemovalArmedModule = ""
-								a.rackRightScroll = min(a.rackRightScroll, max(0,len(a.rackBays())-visibleRight))
-								return nil
-							}
+
 							a.rackRemovalArmedModule = ""
 							return nil
 						}
@@ -1159,7 +1177,6 @@ func (a *App) rackPanel(l uiLayout) string {
 		}
 		rightLines = append(rightLines, card...)
 	}
-	rightLines = append(rightLines, labelStyle.Render("[X] REMOVE MODULE  ·  [REMOVE] CONFIRM SPECIALIST"))
 	leftPane := windowPane("MODULES", left.String(), leftWidth, paneHeight)
 	rightPane := windowPaneWithVerticalScrollbar("RACK BUS", rightLines, rightWidth, paneHeight, len(bays), startR, visibleRight)
 	out.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane))
