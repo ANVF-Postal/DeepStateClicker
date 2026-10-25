@@ -676,12 +676,15 @@ func (a *App) upgradesPanel(l uiLayout) string {
 			if m.Installed { status += " INSTALLED" } else { status += " STORED" }
 		}
 		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
-		name := spec.Name
-		if m != nil && m.Level > 0 { name += "  Rev " + fmt.Sprintf("%02d",m.Level) }
-		name = truncate(fmt.Sprintf("%s %s", map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],name),leftWidth-4)
+		marker := map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade]
+		nameWidth := leftWidth-4
+		if m != nil && m.Level > 0 { nameWidth = leftWidth-13 }
+		name := truncate(fmt.Sprintf("%s %s",marker,spec.Name),nameWidth)
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
 		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
-		left.WriteString(style.Render(name)+"\n")
+		left.WriteString(style.Render(name))
+		if m != nil && m.Level > 0 { left.WriteString(labelStyle.Render(" Rev "+fmt.Sprintf("%02d",m.Level))) }
+		left.WriteString("\n")
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
 	spec := game.ModuleCatalog[max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade))]
