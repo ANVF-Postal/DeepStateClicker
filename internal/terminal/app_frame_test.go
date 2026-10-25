@@ -231,13 +231,20 @@ func TestRackCatalogueSelectThenClickInstallsAndSymbolRemoves(t *testing.T) {
 	if !m.Installed || !m.Booting {
 		t.Fatalf("second row click should install and start boot: %#v", m)
 	}
+	if strings.Contains(rackLeftPaneText(t, app), "WINDOW EXPANSION") {
+		t.Fatal("installed module should leave the ready-to-install list")
+	}
 
-	// The X at the end of the left row is an explicit one-click remove action.
-	app.rackFocusRight = false
-	app.rackCatalogSelected = false
-	app.handleMouse(app.paneLeftSymbolX(), y)
+	// Installed hardware is removed from its rack card, then returns to the
+	// left pane as owned hardware ready for reinstallation.
+	y, line = rackLineWithContext(t, app, "WINDOW EXPANSION", "[X]")
+	x := cellOffset(line, "[X]")
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m.Installed {
-		t.Fatalf("catalogue X shortcut should remove immediately: %#v", m)
+		t.Fatalf("clicking the rack card X should remove the module: %#v", m)
+	}
+	if !strings.Contains(rackLeftPaneText(t, app), "WINDOW EXPANSION") {
+		t.Fatal("removed module should return to the ready-to-install list")
 	}
 }
 
@@ -372,16 +379,11 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
 	app := New(game.NewState(time.Unix(1, 0)))
 	before := app.rackBays()
-	if len(before) != 3 {
-		t.Fatalf("legacy rack should initially show 3 bays, got %d", len(before))
+	if len(before) != 1 {
+		t.Fatalf("blocked legacy rack should initially show only the occupied controller bay, got %d", len(before))
 	}
-	if before[len(before)-1] == nil || !before[len(before)-1].Jammed {
-		t.Fatalf("legacy controller must be the final occupied bay: %#v", before)
-	}
-	for i := 0; i < len(before)-1; i++ {
-		if before[i] != nil && before[i].Jammed {
-			t.Fatalf("jammed controller must never have a bay below it: %#v", before)
-		}
+	if before[0] == nil || !before[0].Jammed {
+		t.Fatalf("legacy controller must be the only initial bay and must be occupied: %#v", before)
 	}
 
 	app.state.CashOnHand = 10_000
@@ -389,11 +391,11 @@ func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
 		t.Fatalf("remove legacy controller: %v", err)
 	}
 	after := app.rackBays()
-	if len(after) != 5 {
-		t.Fatalf("removing legacy controller should reveal 2 additional bays, got %d", len(after))
+	if len(after) != 3 {
+		t.Fatalf("removing legacy controller should unlock three usable bays, got %d", len(after))
 	}
-	if after[len(before)-1] != nil {
-		t.Fatalf("the legacy controller's old bay should remain empty: %#v", after)
+	if after[0] != nil {
+		t.Fatalf("the legacy controller's former position should be available as an empty bay: %#v", after)
 	}
 	empty := 0
 	for _, bay := range after {
@@ -403,8 +405,8 @@ func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
 			t.Fatalf("removed controller should no longer occupy a rack slot: %#v", after)
 		}
 	}
-	if empty < 4 {
-		t.Fatalf("expected newly unlocked empty bays, got %d empty slots", empty)
+	if empty != 3 {
+		t.Fatalf("expected three newly usable empty bays, got %d", empty)
 	}
 }
 
@@ -456,6 +458,10 @@ func TestRemovingLegacyModuleButtonCreatesBlankBayCards(t *testing.T) {
 	app.screen = screenGame
 	app.state.CurrentTab = game.TabPrint
 	app.mainView = "rack"
+	app.state.CashOnHand = 10_000
+	if err := app.state.RemoveJammedLegacyModule(time.Unix(2, 0)); err != nil {
+		t.Fatalf("remove legacy controller before checking the now-open bays: %v", err)
+	}
 
 	lines := plainViewLines(app.View())
 	_, rightWidth := paneWidths(app.layout())
@@ -498,6 +504,85 @@ func TestMouseHitboxesUseTerminalCellsNotUTF8ByteOffsets(t *testing.T) {
 	}
 	if !rackControlWithin(line, cell-2, "[X]") {
 		t.Fatalf("expanded rack target should include two cells before the symbol")
+	}
+}
+
+
+
+func rackLeftPaneText(t *testing.T, app *App) string {
+	t.Helper()
+	lines := plainViewLines(app.rackPanel(app.layout()))
+	leftWidth, _ := paneWidths(app.layout())
+	var out strings.Builder
+	for _, line := range lines {
+		cells := []rune(line)
+		out.WriteString(string(cells[:min(len(cells), leftWidth)]))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func TestRackOnlyListsOwnedModulesReadyToInstall(t *testing.T) {
+	now := time.Now()
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := app.state.InstallModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := app.state.PurchaseModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	app.mainView = "rack"
+
+	left := rackLeftPaneText(t, app)
+	if !strings.Contains(left, "QUEUE CALIBRATION") {
+		t.Fatalf("owned, uninstalled module should be listed as ready: %q", left)
+	}
+	for _, hidden := range []string{"WINDOW EXPANSION", "AUTOMATIC INJECTOR", "SIGNAL OBFUSCATOR"} {
+		if strings.Contains(left, hidden) {
+			t.Fatalf("rack left pane should omit installed or unowned module %q: %q", hidden, left)
+		}
+	}
+}
+
+func TestFullRackRejectsInstallAndFlashesReadyModuleRed(t *testing.T) {
+	now := time.Now()
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil { t.Fatal(err) }
+
+	for _, id := range []string{"window_expansion", "queue_calibration", "auto_injector"} {
+		if err := app.state.PurchaseModule(id, now); err != nil { t.Fatalf("purchase %s: %v", id, err) }
+		if err := app.state.InstallModule(id, now); err != nil { t.Fatalf("install %s: %v", id, err) }
+	}
+	if err := app.state.PurchaseModule("obfuscation", now); err != nil { t.Fatal(err) }
+	app.mainView = "rack"
+	app.uiFrame = 0
+
+	y, line := rackLine(t, app, "SIGNAL OBFUSCATOR")
+	if !strings.Contains(line, "SIGNAL OBFUSCATOR") {
+		t.Fatal("ready module should be visible in left rack pane before the attempted install")
+	}
+	app.handleMouse(app.paneLeftSymbolX(), y)
+
+	m := app.state.Module("obfuscation")
+	if m == nil || m.Installed {
+		t.Fatalf("install attempt against a full rack must leave the module uninstalled: %#v", m)
+	}
+	if app.rackHasFreeBay() {
+		t.Fatalf("three installed modules should occupy all three rack bays: %#v", app.rackBays())
+	}
+	if app.rackRejectedModule != "obfuscation" || !app.rackRejectFlashUntil.After(time.Now()) {
+		t.Fatalf("rejected module should have an active red-flash target and deadline: id=%q until=%v", app.rackRejectedModule, app.rackRejectFlashUntil)
+	}
+	if !strings.Contains(app.message, "RACK FULL") {
+		t.Fatalf("player should receive clear full-rack feedback, got %q", app.message)
 	}
 }
 
