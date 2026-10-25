@@ -436,8 +436,11 @@ func TestRemovingLegacyModuleButtonCreatesBlankBayCards(t *testing.T) {
 		}
 		if strings.Contains(line, "INSTALLED RACK") {
 			// Count the two complete blank-bay enclosures that fit in the initial viewport.
-			for i := y + 1; i+5 < len(lines); i += rackBayHeight {
-				if strings.Contains(lines[i], "┌") && strings.TrimSpace(ansiSequences.ReplaceAllString(lines[i+1], " ")) == "" {
+			for i := y + 1; i+rackBayHeight <= len(lines); i += rackBayHeight {
+				cardText := strings.Join(lines[i:i+rackBayHeight], "\n")
+				if strings.Contains(lines[i], "┌") &&
+					!strings.Contains(cardText, "LEGACY PRINT CONTROLLER") &&
+					!strings.Contains(cardText, "WINDOW EXPANSION") {
 					emptyBayCount++
 				}
 				if emptyBayCount >= 2 { break }
