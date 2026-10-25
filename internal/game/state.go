@@ -89,6 +89,9 @@ type ModuleState struct {
 	Level int `json:"level"`
 	Installed bool `json:"installed"`
 	Jammed bool `json:"jammed,omitempty"`
+	Booting bool `json:"booting,omitempty"`
+	BootTicksTotal int `json:"boot_ticks_total,omitempty"`
+	BootTicksRemaining int `json:"boot_ticks_remaining,omitempty"`
 }
 
 type ModuleSpec struct {
@@ -125,6 +128,7 @@ type State struct {
 	EstimatedNetWorth int64 `json:"estimated_net_worth_cents"`
 	Risk int `json:"risk"`
 	Tick int64 `json:"tick"`
+	UptimeSeconds int64 `json:"uptime_seconds,omitempty"`
 	EmailUnlocked bool `json:"email_unlocked"`
 	EmailRead bool `json:"email_read"`
 	Messages []Message `json:"messages,omitempty"`
@@ -190,6 +194,7 @@ func (s *State) Normalize() {
 	}
 	if s.ITPatience == 0 && len(s.Messages) == 0 { s.ITPatience = 3 }
 	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
+	if s.UptimeSeconds == 0 && s.Tick > 0 { s.UptimeSeconds = s.Tick }
 	if len(s.Modules) == 0 { s.Modules = NewModuleState() }
 	for i := range s.Modules {
 		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
@@ -220,8 +225,23 @@ func (s *State) QueueExploit(now time.Time) error {
 	return nil
 }
 
+func startModuleBoot(s *State, m *ModuleState) {
+	// 4–10 active seconds; Advance pauses entirely while the application is closed.
+	duration := 4 + s.randomInt(7)
+	m.Booting = true
+	m.BootTicksTotal = duration
+	m.BootTicksRemaining = duration
+}
+
+// ResetSystemUptime is reserved for genuine system resets (e.g. power loss), not app exits.
+func (s *State) ResetSystemUptime(now time.Time) {
+	s.UptimeSeconds = 0
+	s.addEvent("system_reset", "System uptime reset after a hardware restart.", now)
+	s.UpdatedAt = now
+}
+
 func moduleLevel(s *State, id string) int {
-	for _, m := range s.Modules { if m.ID == id && m.Installed && !m.Jammed { return m.Level } }
+	for _, m := range s.Modules { if m.ID == id && m.Installed && !m.Jammed && !m.Booting { return m.Level } }
 	return 0
 }
 
@@ -242,6 +262,7 @@ func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
 	if m.Jammed { return errors.New("this module is jammed and must be removed before it can be serviced") }
 	if m.Level > 0 && !m.Installed {
 		m.Installed = true
+		startModuleBoot(s,m)
 		if id == "queue_calibration" { s.Upgrades.WindowCalibration = true }
 		if id == "auto_injector" { s.Upgrades.PrintAutomation = true }
 		s.addEvent("module_installed",spec.Name+" reinstalled at revision "+fmt.Sprint(m.Level)+".",now)
@@ -254,6 +275,7 @@ func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
 	s.CashOnHand -= cost
 	m.Level++
 	m.Installed = true
+	startModuleBoot(s,m)
 	if id == "queue_calibration" { s.Upgrades.WindowCalibration = true }
 	if id == "auto_injector" { s.Upgrades.PrintAutomation = true }
 	s.addEvent("module_upgrade", spec.Name+" advanced to revision "+fmt.Sprint(m.Level)+".", now)
@@ -266,6 +288,9 @@ func (s *State) RemoveModule(id string, now time.Time) error {
 	if m == nil || !m.Installed { return errors.New("module is not installed") }
 	if m.Jammed { return errors.New("module is jammed; safe removal requires a specialist") }
 	m.Installed = false
+	m.Booting = false
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
 	if id == "queue_calibration" { s.Upgrades.WindowCalibration = false }
 	if id == "auto_injector" { s.Upgrades.PrintAutomation = false }
 	s.addEvent("module_removed", m.ID+" removed from the hardware rack.", now)
@@ -337,6 +362,17 @@ func (s *State) BuyWindowCalibration(now time.Time) error {
 func (s *State) Advance(now time.Time) {
 	if s.Status != RunFederal && s.Status != RunSandbox { return }
 	s.Tick++
+	s.UptimeSeconds++
+	for i := range s.Modules {
+		m := &s.Modules[i]
+		if !m.Installed || !m.Booting { continue }
+		if m.BootTicksRemaining > 0 { m.BootTicksRemaining-- }
+		if m.BootTicksRemaining <= 0 {
+			m.Booting = false
+			m.BootTicksRemaining = 0
+			s.addEvent("module_activated", m.ID+" initialization complete. Module online.", now)
+		}
+	}
 	s.Batch.Progress++
 	s.Batch.WindowOpen = false
 	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
