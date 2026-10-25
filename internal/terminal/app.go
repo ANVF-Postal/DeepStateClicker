@@ -253,8 +253,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if a.mainView == "upgrades" {
 				leftWidth, _ := paneWidths(a.layout())
 				if x >= 2 && x < 2+leftWidth {
+					paneLine := visiblePaneText(line, 2, leftWidth)
 					for i, spec := range game.ModuleCatalog {
-						if strings.Contains(line, spec.Name) { a.selectedUpgrade = i; return nil }
+						if strings.Contains(paneLine, spec.Name) { a.selectedUpgrade = i; return nil }
 					}
 				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE") || mouseWithin(line,x,"[ENTER / B] REINSTALL") {
 					return a.handleGameKey("b")
@@ -263,12 +264,13 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if a.mainView == "rack" {
 				leftWidth, _ := paneWidths(a.layout())
 				leftPaneHit := x >= 2 && x < 2+leftWidth
+				rightPaneLine := visiblePaneText(line, 3+leftWidth, a.layout().Width-leftWidth-7)
 				if !leftPaneHit && mouseWithin(line,x,"[X]") {
 					for i, mod := range a.installedModules() {
 						name := mod.ID
 						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
 						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
-						if strings.Contains(line, name) && !mod.Jammed {
+						if strings.Contains(rightPaneLine, name) && !mod.Jammed {
 							a.selectedRackModule = i
 							a.rackFocusRight = true
 							a.activateMainSelection()
@@ -277,15 +279,16 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 					}
 				}
 				if leftPaneHit {
+					paneLine := visiblePaneText(line, 2, leftWidth)
 					for i, spec := range game.ModuleCatalog {
-						if strings.Contains(line, spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
+						if strings.Contains(paneLine, spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
 					}
 				} else {
 					for i, mod := range a.installedModules() {
 						name := mod.ID
 						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
 						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
-						if strings.Contains(line, name) || (mod.Jammed && strings.Contains(line, "JAMMED")) {
+						if strings.Contains(rightPaneLine, name) || (mod.Jammed && strings.Contains(rightPaneLine, "JAMMED")) {
 							a.selectedRackModule = i
 							a.rackFocusRight = true
 							return nil
@@ -1036,6 +1039,13 @@ func (a *App) newsStripView(width int) string {
 	visibleRunes := []rune(track)[start:]
 	if len(visibleRunes) > width { visibleRunes = visibleRunes[:width] }
 	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(string(visibleRunes))
+}
+
+func visiblePaneText(line string, start, width int) string {
+	runes := []rune(line)
+	if start >= len(runes) || width <= 0 { return "" }
+	end := min(len(runes), start+width)
+	return string(runes[start:end])
 }
 
 func mouseWithin(line string,x int,label string) bool {
