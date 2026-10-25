@@ -323,8 +323,11 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 	if app.state.RackSlotsUnlocked != 1 || app.state.RackJammedRemovals != 1 {
 		t.Fatalf("first removal should unlock exactly one bay and advance the price tier: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
 	}
-	if _, line := rackLine(t, app, "$100 - [REMOVE]"); !strings.Contains(line, "LEGACY PRINT CONTROLLER 02") {
-		t.Fatalf("next blocker should be numbered and cost $100: %q", line)
+	if _, line := rackLine(t, app, "LEGACY PRINT CONTROLLER 02"); !strings.Contains(line, "LEGACY PRINT CONTROLLER 02") {
+		t.Fatalf("next blocker should be numbered: %q", line)
+	}
+	if _, line := rackLine(t, app, "$100 - [REMOVE]"); !strings.Contains(line, "$100 - [REMOVE]") {
+		t.Fatalf("next blocker should cost $100: %q", line)
 	}
 	if app.rackRemovalArmedModule != "" {
 		t.Fatalf("confirmation should clear armed removal, got %q", app.rackRemovalArmedModule)
