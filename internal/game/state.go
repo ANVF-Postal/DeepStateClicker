@@ -92,6 +92,7 @@ type ModuleState struct {
 	Booting bool `json:"booting,omitempty"`
 	BootTicksTotal int `json:"boot_ticks_total,omitempty"`
 	BootTicksRemaining int `json:"boot_ticks_remaining,omitempty"`
+	ActivatedFlash bool `json:"activated_flash,omitempty"`
 }
 
 type ModuleSpec struct {
@@ -365,11 +366,13 @@ func (s *State) Advance(now time.Time) {
 	s.UptimeSeconds++
 	for i := range s.Modules {
 		m := &s.Modules[i]
+		if m.ActivatedFlash { m.ActivatedFlash = false; continue }
 		if !m.Installed || !m.Booting { continue }
 		if m.BootTicksRemaining > 0 { m.BootTicksRemaining-- }
 		if m.BootTicksRemaining <= 0 {
 			m.Booting = false
 			m.BootTicksRemaining = 0
+			m.ActivatedFlash = true
 			s.addEvent("module_activated", m.ID+" initialization complete. Module online.", now)
 		}
 	}
