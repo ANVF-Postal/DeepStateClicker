@@ -271,6 +271,8 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
+		case game.TabStorage:
+			if strings.Contains(line,"BUY LOCKBOX") { return a.handleGameKey("1") }
 		case game.TabMessages:
 			switch {
 			case strings.Contains(line, "[I] Leave unanswered"):
@@ -743,7 +745,7 @@ func (a *App) storagePanel(l uiLayout) string {
 	if a.state.LockboxCount >= 3 { b.WriteString(dangerStyle.Render("  CLUTTER: additional boxes attract attention and waste space.")+"\n") }
 	b.WriteString("\n"+labelStyle.Render("Cash above capacity remains yours, but increases exposure."))
 	b.WriteString("\n"+labelStyle.Render("Larger containers and manual transfers will follow in a later storage pass."))
-	b.WriteString("\n\n"+labelStyle.Render("[M] MAIN  ·  [1] BUY LOCKBOX"))
+	b.WriteString("\n\n"+labelStyle.Render("[S] MAIN  ·  [T] STORAGE  ·  [1] BUY LOCKBOX"))
 	return b.String()
 }
 
