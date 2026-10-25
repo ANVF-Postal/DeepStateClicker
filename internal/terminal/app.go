@@ -264,9 +264,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 					for row, paneTitle := range lines {
 						if strings.Contains(paneTitle, "MODULE CATALOG") {
 							idx := y-row-1
-							if idx >= 0 && idx < len(game.ModuleCatalog) && idx != a.selectedUpgrade {
+							a.upgradeBuyArmed = false
+							if idx >= 0 && idx < len(game.ModuleCatalog) {
 								a.selectedUpgrade = idx
-								a.upgradeBuyArmed = false
 							}
 							return nil
 						}
@@ -287,6 +287,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 							idx := start+y-row-1
 							if idx >= start && idx < min(len(game.ModuleCatalog), start+visibleLeft) {
 								if x == leftWidth {
+									a.rackRemovalArmedModule = ""
 									a.selectedUpgrade = idx
 									a.rackCatalogSelected = true
 									a.rackFocusRight = false
@@ -377,10 +378,13 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			case mouseWithin(line, x, "[R] HARDWARE RACK") && a.hasPurchasedModule():
 				a.mainView = "rack"
 				a.rackFocusRight = false
+				a.rackCatalogSelected = false
+				a.rackRemovalArmedModule = ""
 				a.message = ""
 			case mouseWithin(line, x, "[U] UPGRADES"):
 				a.mainView = "upgrades"
 				a.selectedUpgrade = 0
+				a.upgradeBuyArmed = false
 				a.message = ""
 			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED") && mouseWithin(line, x, "[ENTER] ACQUIRE / REMOVE SELECTED"):
 				a.activateMainSelection()
@@ -389,8 +393,8 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				a.message = ""
 			case a.mainView == "upgrades" && mouseWithin(line, x, "[ENTER / B] BUY / UPGRADE"):
 				a.activateMainSelection()
-			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
-				a.rackFocusRight = x > lWidthForRack(a.width)
+			case a.mainView == "rack" && (strings.Contains(line, "MODULES") || strings.Contains(line, "INSTALLED RACK")):
+				a.rackFocusRight = strings.Contains(line, "INSTALLED RACK") || x > lWidthForRack(a.width)
 			}
 		case game.TabStorage:
 			if strings.Contains(line,"BUY LOCKBOX") { return a.handleGameKey("1") }
