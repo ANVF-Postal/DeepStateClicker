@@ -533,18 +533,21 @@ func (a *App) introView() string {
 func (a *App) moveMainSelection(delta int) {
 	if a.mainView == "upgrades" {
 		a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
+		a.upgradeBuyArmed = false
 		return
 	}
 	if a.mainView == "rack" {
+		a.rackRemovalArmedModule = ""
 		if a.rackFocusRight {
 			installed := a.installedModules()
-			a.selectedRackModule = max(0, min(max(0,len(installed)-1), a.selectedRackModule+delta))
-			visible := max(1,(a.height-20)/6)
+			a.selectedRackModule = max(0, min(max(0, len(installed)-1), a.selectedRackModule+delta))
+			visible := max(1, (a.height-20)/6)
 			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
 			a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
-			visibleLeft:=max(2,(a.height-14)/3)
+			a.rackCatalogSelected = true
+			visibleLeft := max(2, (a.height-14)/3)
 			if a.selectedUpgrade >= a.rackLeftScroll+visibleLeft { a.rackLeftScroll = a.selectedUpgrade-visibleLeft+1 }
 			if a.selectedUpgrade < a.rackLeftScroll { a.rackLeftScroll = a.selectedUpgrade }
 		}
@@ -563,7 +566,20 @@ func (a *App) selectRackModule(id string) {
 }
 
 func (a *App) hasPurchasedModule() bool {
-	for _, spec := range game.ModuleCatalog { if m:=a.state.Module(spec.ID); m!=nil && m.Level>0 { return true } }
+	for _, spec := range game.ModuleCatalog {
+		if m := a.state.Module(spec.ID); m != nil && m.Level > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) hasReadyModules() bool {
+	for _, spec := range game.ModuleCatalog {
+		if m := a.state.Module(spec.ID); m != nil && m.Level > 0 && !m.Installed && !m.Jammed {
+			return true
+		}
+	}
 	return false
 }
 
