@@ -257,37 +257,101 @@ func (s *State) Module(id string) *ModuleState {
 	return nil
 }
 
-func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
+// PurchaseModule acquires a module revision without installing it. If a newer
+// revision is purchased for an installed module, the previous hardware is
+// taken offline and the new revision waits for an explicit rack installation.
+func (s *State) PurchaseModule(id string, now time.Time) error {
 	var spec *ModuleSpec
-	for i := range ModuleCatalog { if ModuleCatalog[i].ID == id { spec = &ModuleCatalog[i]; break } }
-	if spec == nil { return errors.New("unknown module") }
+	for i := range ModuleCatalog {
+		if ModuleCatalog[i].ID == id {
+			spec = &ModuleCatalog[i]
+			break
+		}
+	}
+	if spec == nil {
+		return errors.New("unknown module")
+	}
 	m := s.Module(id)
+	if m != nil && m.Jammed {
+		return errors.New("this module is jammed and must be removed before it can be serviced")
+	}
+	level := 0
+	if m != nil {
+		level = m.Level
+	}
+	if level >= spec.MaxLevel {
+		return ErrUpgradeOwned
+	}
+	cost := spec.Cost * int64(level+1)
+	if s.CashOnHand < cost {
+		return ErrInsufficient
+	}
 	if m == nil {
-		s.Modules = append(s.Modules, ModuleState{ID:id})
+		s.Modules = append(s.Modules, ModuleState{ID: id})
 		m = &s.Modules[len(s.Modules)-1]
 	}
-	if m.Jammed { return errors.New("this module is jammed and must be removed before it can be serviced") }
-	if m.Level > 0 && !m.Installed {
-		m.Installed = true
-		startModuleBoot(s,m)
-		if id == "queue_calibration" { s.Upgrades.WindowCalibration = true }
-		if id == "auto_injector" { s.Upgrades.PrintAutomation = true }
-		s.addEvent("module_installed",spec.Name+" reinstalled at revision "+fmt.Sprint(m.Level)+".",now)
-		s.UpdatedAt = now
-		return nil
-	}
-	if m.Level >= spec.MaxLevel { return ErrUpgradeOwned }
-	cost := spec.Cost * int64(m.Level+1)
-	if s.CashOnHand < cost { return ErrInsufficient }
+
 	s.CashOnHand -= cost
 	m.Level++
-	m.Installed = true
-	startModuleBoot(s,m)
-	if id == "queue_calibration" { s.Upgrades.WindowCalibration = true }
-	if id == "auto_injector" { s.Upgrades.PrintAutomation = true }
-	s.addEvent("module_upgrade", spec.Name+" advanced to revision "+fmt.Sprint(m.Level)+".", now)
+	m.Installed = false
+	m.Booting = false
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+	m.ActivatedFlash = false
+	if id == "queue_calibration" {
+		s.Upgrades.WindowCalibration = false
+	}
+	if id == "auto_injector" {
+		s.Upgrades.PrintAutomation = false
+	}
+	s.addEvent("module_purchase", spec.Name+" revision "+fmt.Sprint(m.Level)+" purchased; awaiting rack installation.", now)
 	s.UpdatedAt = now
 	return nil
+}
+
+// InstallModule moves a purchased module into the rack and starts its boot
+// sequence. Effects remain inactive until the boot countdown completes.
+func (s *State) InstallModule(id string, now time.Time) error {
+	m := s.Module(id)
+	if m == nil || m.Level <= 0 {
+		return errors.New("purchase this module in UPGRADES before installing it")
+	}
+	if m.Jammed {
+		return errors.New("this module is jammed and must be removed before it can be serviced")
+	}
+	if m.Installed {
+		return errors.New("module is already installed")
+	}
+	m.Installed = true
+	startModuleBoot(s, m)
+	if id == "queue_calibration" {
+		s.Upgrades.WindowCalibration = true
+	}
+	if id == "auto_injector" {
+		s.Upgrades.PrintAutomation = true
+	}
+	name := id
+	for _, spec := range ModuleCatalog {
+		if spec.ID == id {
+			name = spec.Name
+			break
+		}
+	}
+	s.addEvent("module_installed", name+" installed at revision "+fmt.Sprint(m.Level)+"; initialization started.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+// BuyOrUpgradeModule is retained for compatibility with the early prototype.
+// New UI flows should call PurchaseModule and InstallModule separately.
+func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
+	if m := s.Module(id); m != nil && m.Level > 0 && !m.Installed && !m.Jammed {
+		return s.InstallModule(id, now)
+	}
+	if err := s.PurchaseModule(id, now); err != nil {
+		return err
+	}
+	return s.InstallModule(id, now)
 }
 
 func (s *State) RemoveModule(id string, now time.Time) error {
