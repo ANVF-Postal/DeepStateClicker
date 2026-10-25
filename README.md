@@ -29,6 +29,8 @@ go vet ./...
 - Cash capacity is not a hard stop. Capital can exceed capacity, but each excess dollar increases exposure. The capital panel's bar is green below 80%, amber from 80%, and signals overflow at 100%.
 - MAIN has internal PRINT OPERATIONS, UPGRADES, and HARDWARE RACK views. Purchased printer upgrades are represented by installed modules; revisions improve module effects.
 - The rack has no fixed bay limit. It can contain installed modules and an inherited, jammed legacy controller that costs money to remove safely.
+- New and reinstalled modules appear in the rack immediately, then run a 6–12 active-second initialization sequence. Their effects remain disabled until activation completes; closing the game pauses boot progress.
+- MAIN reports persistent system UPTIME in `HHH:MM:SS`; closing and reopening the game does not reset it.
 - STORAGE unlocks as capital approaches 80% of apartment capacity. Lockboxes add capacity, with diminishing space efficiency and clutter exposure after several boxes. Individual container balances and manual transfers are planned for the next storage pass.
 - After enough extra cash has been printed, a message arrives from IT Operations. Open MESSAGES to read the inbox and choose a reply. Replies arrive after randomized active game seconds; timers pause when the application is closed.
 - The news bulletin flashes, then scrolls each headline across the terminal. Headlines become more serious as the run continues.
