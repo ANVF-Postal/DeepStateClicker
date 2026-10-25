@@ -85,7 +85,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.mouseOnTabRow(msg.Y) { a.cycleTab(delta) } else if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
 				leftWidth:=max(24,min(38,a.layout().Width/3))
 				if msg.X < leftWidth+4 { a.rackLeftScroll=max(0,min(max(0,len(game.ModuleCatalog)-2),a.rackLeftScroll+delta)) } else {
-					visible:=max(2,(a.layout().Height-14)/6)
+					visible:=max(1,(a.layout().Height-20)/6)
 					a.rackRightScroll=max(0,min(max(0,len(a.installedModules())-visible),a.rackRightScroll+delta))
 				}
 			} else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.selectedUpgrade=max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade+delta)) }
@@ -451,7 +451,7 @@ func (a *App) moveMainSelection(delta int) {
 		if a.rackFocusRight {
 			installed := a.installedModules()
 			a.selectedRackModule = max(0, min(max(0,len(installed)-1), a.selectedRackModule+delta))
-			visible := max(2,(a.height-14)/6)
+			visible := max(1,(a.height-20)/6)
 			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
@@ -722,7 +722,7 @@ func (a *App) rackPanel(l uiLayout) string {
 	leftWidth := max(24,min(38,l.Width/3))
 	rightWidth := max(28,l.Width-leftWidth-7)
 	visibleLeft := max(2,(l.Height-14)/3)
-	visibleRight := max(2,(l.Height-14)/6)
+	visibleRight := max(1,(l.Height-20)/6)
 	var left,right strings.Builder
 	start := a.rackLeftScroll
 	end := min(len(game.ModuleCatalog),start+visibleLeft)
@@ -739,7 +739,7 @@ func (a *App) rackPanel(l uiLayout) string {
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
 	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth)
-	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),a.rackRightScroll,max(2,(l.Height-14)/6)))+"\n")
+	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),a.rackRightScroll,max(1,(l.Height-20)/6)))+"\n")
 	startR:=a.rackRightScroll
 	endR:=min(len(installed),startR+visibleRight)
 	for i:=startR;i<endR;i++ {
