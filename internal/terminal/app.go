@@ -259,7 +259,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if a.mainView == "rack" {
 				for i,mod := range a.installedModules() {
 					name:=mod.ID; for _,spec:=range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name } }; if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
-					blockWidth:=max(20,min(max(28,min(38,a.layout().Width/3)) /* pane estimate */,44))
+					leftPaneWidth:=max(24,min(38,a.layout().Width/3)); rightPaneWidth:=max(28,a.layout().Width-leftPaneWidth-7); blockWidth:=max(20,min(rightPaneWidth-3,44))
 					visibleName:=truncate(name,max(8,blockWidth-9))
 					if mouseWithin(line,x,"[X]") && strings.Contains(line,visibleName) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
 				}
