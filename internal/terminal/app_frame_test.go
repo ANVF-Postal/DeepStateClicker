@@ -290,7 +290,7 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 	app.rackRightScroll = len(app.rackBays())-visibleRackBays(max(4,panelLineLimit(app.layout(),false)-2))
 	app.rackRightScroll = max(0,app.rackRightScroll)
 
-	y, line := rackLineWithContext(t, app, "$50 - [REMOVE]", "JAMMED - SPECIALIST REMOVAL")
+	y, line := rackLine(t, app, "$50 - [REMOVE]")
 	x := strings.Index(line, "[REMOVE]")
 	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed {
@@ -300,7 +300,7 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 		t.Fatalf("first click should arm specialist removal, got %q", app.rackRemovalArmedModule)
 	}
 
-	y, line = rackLineWithContext(t, app, "$50 - [REMOVE]", "JAMMED - SPECIALIST REMOVAL")
+	y, line = rackLine(t, app, "$50 - [REMOVE]")
 	x = strings.Index(line, "[REMOVE]")
 	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("legacy_controller"); m == nil || m.Installed {
