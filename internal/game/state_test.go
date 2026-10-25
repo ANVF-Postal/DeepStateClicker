@@ -243,3 +243,34 @@ func TestUptimePersistsSeparatelyFromSimulationTick(t *testing.T) {
 	s.Advance(now.Add(7*time.Second))
 	if s.UptimeSeconds != 1 || s.Tick != 6 { t.Fatalf("uptime should resume from reset while tick remains cumulative, got %d/%d",s.UptimeSeconds,s.Tick) }
 }
+
+
+func TestPurchaseModuleWaitsForExplicitRackInstallation(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = 100_000
+
+	if err := s.PurchaseModule("window_expansion", now); err != nil {
+		t.Fatalf("purchase module: %v", err)
+	}
+	m := s.Module("window_expansion")
+	if m == nil || m.Level != 1 || m.Installed || m.Booting {
+		t.Fatalf("purchase should leave revision ready but not installed: %#v", m)
+	}
+	if got := moduleLevel(&s, "window_expansion"); got != 0 {
+		t.Fatalf("uninstalled module must not grant effects, got level %d", got)
+	}
+	if s.CashOnHand != 97_500 {
+		t.Fatalf("purchase should charge the base cost, got cash %d", s.CashOnHand)
+	}
+
+	if err := s.InstallModule("window_expansion", now); err != nil {
+		t.Fatalf("install purchased module: %v", err)
+	}
+	if !m.Installed || !m.Booting {
+		t.Fatalf("install should transfer module to rack and start boot: %#v", m)
+	}
+	if got := moduleLevel(&s, "window_expansion"); got != 0 {
+		t.Fatalf("booting module must not grant effects, got level %d", got)
+	}
+}
