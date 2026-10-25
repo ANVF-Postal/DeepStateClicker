@@ -243,6 +243,20 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		case game.TabPrint, game.TabStore:
 			if strings.Contains(line, "INJECT") && a.mainView != "rack" && a.mainView != "upgrades" { return a.handleGameKey("x") }
 			if a.mainView == "upgrades" {
+				leftWidth := max(28,min(38,a.layout().Width/3))
+				if x < leftWidth+5 {
+					for i,spec := range game.ModuleCatalog { if strings.Contains(line,spec.Name) { a.selectedUpgrade=i; return nil } }
+				} else if strings.Contains(line,"[ENTER / B] BUY / UPGRADE MODULE") || strings.Contains(line,"[ENTER / B] REINSTALL MODULE") {
+					return a.handleGameKey("b")
+				}
+			}
+			if a.mainView == "rack" && strings.Contains(line,"[X]") && x >= lWidthForRack(a.width)+4 {
+				for i,mod := range a.installedModules() {
+					name:=mod.ID; for _,spec:=range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name } }; if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
+					if strings.Contains(line,name) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
+				}
+			}
+			if a.mainView == "upgrades" {
 				for row, text := range lines {
 					if strings.Contains(text,"MODULE CATALOGUE") {
 						idx := (y-row-1)/2
@@ -486,7 +500,7 @@ func (a *App) activateMainSelection() {
 				spec := game.ModuleCatalog[a.selectedUpgrade]
 				if m := a.state.Module(spec.ID); m != nil && m.Installed {
 					a.message = "Module already installed. Open UPGRADES to improve its revision."
-				} else if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" installed in the rack." }
+				} else if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" transferred to rack; initialization sequence started."; a.rackFocusRight = true; a.selectedRackModule = max(0,len(a.installedModules())-1) }
 			}
 		}
 	}
@@ -496,7 +510,7 @@ func (a *App) buySelectedModule(now time.Time) {
 	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) { return }
 	spec := game.ModuleCatalog[a.selectedUpgrade]
 	if spec.ID == "obfuscation" && a.state.Risk < 25 { a.message = "Signal obfuscation remains unavailable until scrutiny increases."; return }
-	if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" upgraded to revision "+fmt.Sprint(a.state.Module(spec.ID).Level)+"." }
+	if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { m:=a.state.Module(spec.ID); a.message = spec.Name+" transferred to rack; initialization sequence started (REV "+fmt.Sprint(m.Level)+")."; a.mainView = "rack"; a.rackFocusRight = true; a.selectedRackModule = max(0,len(a.installedModules())-1) }
 }
 
 func lWidthForRack(width int) int { return max(24,min(38,width/3)) }
@@ -755,13 +769,10 @@ func (a *App) rackPanel(l uiLayout) string {
 		for row,line:=range card {
 			if row==1 {
 				// Keep revision and effect text visually separate from the module's color.
-				right.WriteString(st.Render("│"+padCells(rev,"",inner)[:inner]+"│")+"
-")
+				right.WriteString(labelStyle.Render(card[row])+"\n")
 			} else if row==len(card)-2 && m.Booting {
-				right.WriteString(okStyle.Render(line)+"
-")
-			} else { right.WriteString(st.Render(line)+"
-") }
+				right.WriteString(okStyle.Render(line)+"\n")
+			} else { right.WriteString(st.Render(line)+"\n") }
 		}
 		if m.Booting && m.BootTicksRemaining==1 { right.WriteString(okStyle.Render("             ACTIVATED!")+"\n") }
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
