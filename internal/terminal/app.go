@@ -79,10 +79,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.injectHeldRed = false
 			return a, a.handleMouse(msg.X, msg.Y)
 		}
-		if a.screen == screenGame && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) && a.mouseOnTabRow(msg.Y) {
+		if a.screen == screenGame && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
 			delta := 1
 			if msg.Button == tea.MouseButtonWheelUp { delta = -1 }
-			a.cycleTab(delta)
+			if a.mouseOnTabRow(msg.Y) { a.cycleTab(delta) } else if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
+				leftWidth:=max(24,min(38,a.layout().Width/3))
+				if msg.X < leftWidth+4 { a.rackLeftScroll=max(0,min(max(0,len(game.ModuleCatalog)-2),a.rackLeftScroll+delta)) } else {
+					visible:=max(2,(a.layout().Height-14)/6)
+					a.rackRightScroll=max(0,min(max(0,len(a.installedModules())-visible),a.rackRightScroll+delta))
+				}
+			} else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.selectedUpgrade=max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade+delta)) }
 		}
 	case tickMsg:
 		if a.screen == screenGame {
@@ -758,6 +764,12 @@ func (a *App) rackPanel(l uiLayout) string {
 			filled:=min(barWidth,max(0,done*barWidth/max(1,m.BootTicksTotal)))
 			bar:="["+strings.Repeat("█",filled)+strings.Repeat("·",barWidth-filled)+"]"
 			card=append(card,"│"+padCells(" "+bar,"",inner)+"│")
+		} else if m.ActivatedFlash {
+			barWidth:=max(6,inner-2)
+			bar:="["+strings.Repeat("█",barWidth)+"]"
+			activated:="ACTIVATED!"
+			card=append(card,"│"+strings.Repeat(" ",max(0,(inner-len(activated))/2))+activated+strings.Repeat(" ",max(0,inner-len(activated)-(inner-len(activated))/2))+"│")
+			card=append(card,"│"+padCells(" "+bar,"",inner)+"│")
 		} else if !m.Jammed {
 			flicker:="*  *  *  *  *"
 			if a.uiFrame%7<3 { flicker="* *   *  * *" }
@@ -770,11 +782,11 @@ func (a *App) rackPanel(l uiLayout) string {
 			if row==1 {
 				// Keep revision and effect text visually separate from the module's color.
 				right.WriteString(labelStyle.Render(card[row])+"\n")
-			} else if row==len(card)-2 && m.Booting {
+			} else if row==len(card)-2 && (m.Booting || m.ActivatedFlash) {
 				right.WriteString(okStyle.Render(line)+"\n")
 			} else { right.WriteString(st.Render(line)+"\n") }
 		}
-		if m.Booting && m.BootTicksRemaining==1 { right.WriteString(okStyle.Render("             ACTIVATED!")+"\n") }
+		if m.ActivatedFlash { right.WriteString(okStyle.Render("             ACTIVATED!")+"\n") }
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
 	}
 	if len(installed)==0 || len(installed)<len(game.ModuleCatalog) {
