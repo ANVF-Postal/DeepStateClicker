@@ -1527,17 +1527,27 @@ func visiblePaneText(line string, start, width int) string {
 	return string(runes[start:end])
 }
 
-func mouseWithin(line string, x int, label string) bool {
+// cellOffset returns the visible terminal-cell offset of a substring.
+// Go string indexes count UTF-8 bytes, but mouse coordinates count terminal
+// cells. Box-drawing characters in the rack are multi-byte and one cell wide.
+func cellOffset(line, label string) int {
 	at := strings.Index(line, label)
-	return at >= 0 && x >= at && x < at+len(label)
+	if at < 0 {
+		return -1
+	}
+	return lipgloss.Width(line[:at])
+}
+
+func mouseWithin(line string, x int, label string) bool {
+	at := cellOffset(line, label)
+	return at >= 0 && x >= at && x < at+lipgloss.Width(label)
 }
 
 // rackControlWithin expands a tiny visual control into a more forgiving hit
-// target. This matters for terminal emulators whose mouse reports land on an
-// adjacent cell at the edge of a bordered pane.
+// target, using terminal cells rather than UTF-8 byte offsets.
 func rackControlWithin(line string, x int, label string) bool {
-	at := strings.Index(line, label)
-	return at >= 0 && x >= max(0, at-2) && x < at+len(label)+2
+	at := cellOffset(line, label)
+	return at >= 0 && x >= max(0, at-2) && x < at+lipgloss.Width(label)+2
 }
 
 func (a *App) mouseOnTabRow(y int) bool {
