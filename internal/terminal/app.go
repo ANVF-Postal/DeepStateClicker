@@ -801,7 +801,7 @@ func (a *App) rackPanel(l uiLayout) string {
 	inner:=max(16,min(rightWidth-5,36))-2
 	right.WriteString(labelStyle.Render("┌"+strings.Repeat("─",inner)+"┐")+"\n")
 	right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY","",inner)+"│")+"\n")
-	right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n"
+	right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n")
 	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
 	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK"))
 	rightPane:=windowPane("RACK BUS",right.String(),rightWidth)
