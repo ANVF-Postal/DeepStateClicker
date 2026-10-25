@@ -545,31 +545,32 @@ func (a *App) cashPanelView(width int) string {
 	top := "┌─"+title+strings.Repeat("─",max(0,inner-len(title)-1))+"┐"
 	cashLine := " CAPITAL ON HAND  $"+money(a.state.CashOnHand)
 	capacityLine := " CAPACITY         $"+money(a.state.CashCapacity)
-	netLine := " EST. NET WORTH   ~$"+money(a.state.EstimatedNetWorth)
-	totalLine := " TOTAL PRINTED    $"+money(a.state.TotalPrinted)
+	financialLine := " EST. NET WORTH ~$"+money(a.state.EstimatedNetWorth)+"  |  PRINTED $"+money(a.state.TotalPrinted)
 	util := 0
 	if a.state.CashCapacity > 0 { util = int(a.state.CashOnHand*100/a.state.CashCapacity) }
-	barWidth := max(10,inner-14)
+	barWidth := max(8,inner-16)
 	filled := min(barWidth,max(0,util*barWidth/100))
 	bar := strings.Repeat("━",filled)+strings.Repeat("─",barWidth-filled)
 	barColor := green
 	if util >= 80 { barColor = amber }
 	if util >= 100 {
+		barColor = red
 		r := []rune(bar)
-		if len(r)>0 { r[len(r)-1] = '!' }
+		if len(r)>0 {
+			if a.uiFrame%6 < 3 { r[len(r)-1] = '!' } else { r[len(r)-1] = ' ' }
+		}
 		bar = string(r)
 	}
-	status := fmt.Sprintf(" %3d%% UTILIZED",util)
-	if util >= 100 { status = fmt.Sprintf(" %3d%% OVERFLOW",util) }
-	lines := []string{
-		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(amber).Bold(true).Render(truncate(cashLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(cashLine,inner)))) )+lipgloss.NewStyle().Foreground(muted).Render("│"),
-		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(capacityLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(capacityLine,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
-		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(truncate(netLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(netLine,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
-		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(totalLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(totalLine,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
-		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(barColor).Render(truncate(bar,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(bar,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
-		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(barColor).Render(truncate(status,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(status,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+	status := fmt.Sprintf("%d%% UTILIZED",util)
+	if util >= 100 { status = fmt.Sprintf("%d%% OVERFLOW",util) }
+	barLine := bar+"  "+status
+	rows := []string{
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(amber).Bold(true).Render(truncate(cashLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(cashLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(capacityLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(capacityLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(truncate(financialLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(financialLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(barColor).Render(truncate(barLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(barLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
 	}
-	return lipgloss.NewStyle().Width(boxWidth).Render(strings.Join(append([]string{top},append(lines,"└"+strings.Repeat("─",inner)+"┘")...), "\n"))
+	return lipgloss.NewStyle().Width(boxWidth).Render(strings.Join(append([]string{top},append(rows,"└"+strings.Repeat("─",inner)+"┘")...), "\n"))
 }
 
 func (a *App) printPanel(l uiLayout) string {
@@ -939,4 +940,8 @@ func wrapText(s string,width int) string {
 	}
 	return strings.Join(out,"\n")
 }
-func money(cents int64) string { return fmt.Sprintf("%d.%02d",cents/100,cents%100) }
+func money(cents int64) string {
+	whole := fmt.Sprintf("%d",cents/100)
+	for i:=len(whole)-3; i>0; i-=3 { whole = whole[:i]+","+whole[i:] }
+	return fmt.Sprintf("%s.%02d",whole,cents%100)
+}
