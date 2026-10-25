@@ -266,7 +266,8 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			case strings.Contains(line, "[R] HARDWARE RACK"): a.mainView = "rack"; a.rackFocusRight = false
 			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
 			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
-			case a.mainView == "upgrades" && strings.Contains(line, "BUY"): a.activateMainSelection()
+			case a.mainView == "upgrades" && (strings.Contains(line, "BUY") || strings.Contains(line,"REINSTALL MODULE")): a.activateMainSelection()
+			case a.state.CurrentTab == game.TabStorage && strings.Contains(line,"BUY LOCKBOX"): return a.handleGameKey("1")
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
