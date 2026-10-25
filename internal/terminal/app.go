@@ -739,7 +739,7 @@ func (a *App) rackPanel(l uiLayout) string {
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
 	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth)
-	right.WriteString(titleStyle.Render("INSTALLED RACK")+"\n")
+	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),startRPlaceholder(a),max(2,(l.Height-14)/6)))+"\n")
 	startR:=a.rackRightScroll
 	endR:=min(len(installed),startR+visibleRight)
 	for i:=startR;i<endR;i++ {
@@ -817,6 +817,14 @@ func windowPane(title, content string, width int) string {
 	}
 	out.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘"))
 	return out.String()
+}
+
+func rackScrollbar(total,start,visible int) string {
+	const height=6
+	if total<=visible { return "[══════]" }
+	thumb:=max(1,height*visible/total)
+	pos:=min(height-thumb,max(0,start*height/max(1,total-visible)))
+	return "["+strings.Repeat("░",pos)+strings.Repeat("█",thumb)+strings.Repeat("░",height-pos-thumb)+"]"
 }
 
 func padCells(left,right string,width int) string {
