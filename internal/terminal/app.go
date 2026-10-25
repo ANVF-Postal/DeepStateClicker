@@ -264,53 +264,108 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 					for row, paneTitle := range lines {
 						if strings.Contains(paneTitle, "MODULE CATALOG") {
 							idx := y-row-1
-							if idx >= 0 && idx < len(game.ModuleCatalog) { a.selectedUpgrade = idx }
+							if idx >= 0 && idx < len(game.ModuleCatalog) && idx != a.selectedUpgrade {
+								a.selectedUpgrade = idx
+								a.upgradeBuyArmed = false
+							}
 							return nil
 						}
 					}
-				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE") || mouseWithin(line,x,"[ENTER / B] REINSTALL") {
-					return a.handleGameKey("b")
+				} else if mouseWithin(line, x, "[ENTER / B] BUY / UPGRADE") || mouseWithin(line, x, "[CONFIRM] CLICK BUY / UPGRADE AGAIN") {
+					return a.armOrConfirmUpgradeBuy()
 				}
 			}
 			if a.mainView == "rack" {
 				leftWidth, rightWidth := paneWidths(a.layout())
 				leftPaneHit := x >= 2 && x < 2+leftWidth
-				rightPaneLine := visiblePaneText(line, 3+leftWidth, rightWidth)
-				if !leftPaneHit && mouseWithin(line,x,"[X]") {
-					for i, mod := range a.installedModules() {
-						name := mod.ID
-						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
-						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
-						if strings.Contains(rightPaneLine, name) && !mod.Jammed {
-							a.selectedRackModule = i
-							a.rackFocusRight = true
-							a.activateMainSelection()
-							return nil
-						}
-					}
-				}
 				if leftPaneHit {
 					paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
 					visibleLeft := max(1, paneHeight-2)
 					start := min(a.rackLeftScroll, max(0, len(game.ModuleCatalog)-visibleLeft))
 					for row, paneTitle := range lines {
-						if strings.Contains(paneTitle, "AVAILABLE MODULES") {
+						if strings.Contains(paneTitle, "MODULES") && strings.Contains(paneTitle, "┌") {
 							idx := start+y-row-1
 							if idx >= start && idx < min(len(game.ModuleCatalog), start+visibleLeft) {
-								a.selectedUpgrade = idx
-								a.rackFocusRight = false
+								if x == leftWidth {
+									a.selectedUpgrade = idx
+									a.rackCatalogSelected = true
+									a.rackFocusRight = false
+									spec := game.ModuleCatalog[idx]
+									m := a.state.Module(spec.ID)
+									if m != nil && m.Level > 0 && m.Installed {
+										if err := a.state.RemoveModule(spec.ID, time.Now()); err != nil {
+											a.message = err.Error()
+										} else {
+											a.message = spec.Name+" removed from the rack."
+										}
+									} else if m != nil && m.Level > 0 && !m.Installed {
+										if err := a.state.InstallModule(spec.ID, time.Now()); err != nil {
+											a.message = err.Error()
+										} else {
+											a.message = spec.Name+" inserted. Initialization sequence started."
+											a.rackFocusRight = true
+											a.selectRackModule(spec.ID)
+										}
+									} else if idx >= 0 {
+										a.message = "Purchase "+spec.Name+" in UPGRADES before installing it."
+									}
+								} else if a.rackCatalogSelected && a.selectedUpgrade == idx {
+									a.toggleSelectedRackCatalogModule(time.Now())
+								} else {
+									a.selectedUpgrade = idx
+									a.rackCatalogSelected = true
+									a.rackFocusRight = false
+									a.rackRemovalArmedModule = ""
+									a.message = "Selected "+game.ModuleCatalog[idx].Name+". Click again to install/remove."
+								}
 							}
 							return nil
 						}
 					}
-				} else {
-					for i, mod := range a.installedModules() {
-						name := mod.ID
-						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
-						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
-						if strings.Contains(rightPaneLine, name) || (mod.Jammed && strings.Contains(rightPaneLine, "JAMMED")) {
-							a.selectedRackModule = i
-							a.rackFocusRight = true
+					return nil
+				}
+
+				rightPaneStart := 3+leftWidth
+				if x >= rightPaneStart {
+					startR := min(a.rackRightScroll, max(0, len(a.installedModules())-max(1,(max(4,panelLineLimit(a.layout(),a.message!="")-2)-9)/5)))
+					installed := a.installedModules()
+					visibleRight := max(1, (max(4,panelLineLimit(a.layout(),a.message!="")-2)-9)/5)
+					endR := min(len(installed), startR+visibleRight)
+					for row, paneTitle := range lines {
+						if strings.Contains(paneTitle, "INSTALLED RACK") {
+							cardY := row+1
+							for i := startR; i < endR; i++ {
+								mod := installed[i]
+								cardHeight := rackCardHeight(mod)
+								if y >= cardY && y < cardY+cardHeight {
+									a.selectedRackModule = i
+									a.rackFocusRight = true
+									if mod.Jammed && mouseWithin(line, x, "[REMOVE]") {
+										if a.rackRemovalArmedModule == mod.ID {
+											if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
+												a.message = err.Error()
+											} else {
+												a.message = "Specialist removed the legacy print controller."
+											}
+											a.rackRemovalArmedModule = ""
+										} else {
+											a.rackRemovalArmedModule = mod.ID
+											a.message = "Click [REMOVE] again to confirm specialist removal ($50.00)."
+										}
+									} else if !mod.Jammed && mouseWithin(line, x, "[X]") {
+										if err := a.state.RemoveModule(mod.ID, time.Now()); err != nil {
+											a.message = err.Error()
+										} else {
+											a.message = mod.ID+" removed from the rack."
+										}
+										a.rackRemovalArmedModule = ""
+									} else {
+										a.rackRemovalArmedModule = ""
+									}
+									return nil
+								}
+								cardY += cardHeight+1
+							}
 							return nil
 						}
 					}
@@ -368,6 +423,16 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	}
 	return nil
 }
+func (a *App) armOrConfirmUpgradeBuy() tea.Cmd {
+	if a.upgradeBuyArmed {
+		a.upgradeBuyArmed = false
+		return a.handleGameKey("b")
+	}
+	a.upgradeBuyArmed = true
+	a.message = "Click BUY / UPGRADE again to confirm. Press B or ENTER to buy immediately."
+	return nil
+}
+
 func (a *App) selectMessage(delta int) {
 	if len(a.state.Messages) == 0 { return }
 	current := 0
