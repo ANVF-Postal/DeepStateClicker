@@ -81,6 +81,34 @@ type UpgradeState struct {
 	WindowCalibration bool `json:"window_calibration"`
 }
 
+type ModuleState struct {
+	ID string `json:"id"`
+	Level int `json:"level"`
+	Installed bool `json:"installed"`
+	Jammed bool `json:"jammed,omitempty"`
+}
+
+type ModuleSpec struct {
+	ID string
+	Name string
+	Description string
+	Color string
+	Cost int64
+	MaxLevel int
+	Suspicion int
+}
+
+var ModuleCatalog = []ModuleSpec{
+	{ID:"window_expansion", Name:"WINDOW EXPANSION", Description:"Extends the injection opportunity by one active second per revision.", Color:"#267C6C", Cost:2500, MaxLevel:3, Suspicion:1},
+	{ID:"queue_calibration", Name:"QUEUE CALIBRATION", Description:"Makes the brief opportunity easier to recognize.", Color:"#315E85", Cost:1500, MaxLevel:3, Suspicion:1},
+	{ID:"auto_injector", Name:"AUTOMATIC INJECTOR", Description:"Queues an injection automatically during an available window.", Color:"#6C4B91", Cost:5000, MaxLevel:3, Suspicion:3},
+	{ID:"obfuscation", Name:"SIGNAL OBFUSCATOR", Description:"A future module intended to reduce scrutiny of installed hardware.", Color:"#8A6D2F", Cost:12000, MaxLevel:3, Suspicion:0},
+}
+
+func NewModuleState() []ModuleState {
+	return []ModuleState{{ID:"legacy_controller", Level:1, Installed:true, Jammed:true}}
+}
+
 type State struct {
 	SchemaVersion int `json:"schema_version"`
 	RunID string `json:"run_id"`
@@ -103,6 +131,7 @@ type State struct {
 	ITReplyCount int `json:"it_reply_count"`
 	Batch BatchState `json:"batch"`
 	Upgrades UpgradeState `json:"upgrades"`
+	Modules []ModuleState `json:"modules,omitempty"`
 	NewsIndex int `json:"news_index"`
 	Events []Event `json:"events"`
 	CreatedAt time.Time `json:"created_at"`
@@ -137,6 +166,7 @@ func NewState(now time.Time) State {
 		CreatedAt: now,
 		UpdatedAt: now,
 		Batch: BatchState{Number: 1, Progress: 0, LastOutcome: "Routine batch cycle active."},
+		Modules: NewModuleState(),
 		Events: []Event{{AtTick: 0, Kind: "discovery", Text: "The discrepancy is real. The exploit is already in place; the queue is moving.", At: now}},
 	}
 	if s.RandomState == 0 { s.RandomState = 1 }
@@ -154,6 +184,13 @@ func (s *State) Normalize() {
 	}
 	if s.ITPatience == 0 && len(s.Messages) == 0 { s.ITPatience = 3 }
 	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
+	if len(s.Modules) == 0 { s.Modules = NewModuleState() }
+	for i := range s.Modules {
+		if s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
+		if s.Modules[i].ID == "auto_injector" && s.Modules[i].Level > 0 { s.Upgrades.PrintAutomation = true }
+	}
+	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { s.Modules = append(s.Modules, ModuleState{ID:"queue_calibration", Level:1, Installed:true}) }
+	if s.Upgrades.PrintAutomation && moduleLevel(s, "auto_injector") == 0 { s.Modules = append(s.Modules, ModuleState{ID:"auto_injector", Level:1, Installed:true}) }
 	if len(s.Messages) == 0 && s.EmailUnlocked {
 		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
 		if s.EmailRead {
@@ -179,6 +216,64 @@ func (s *State) QueueExploit(now time.Time) error {
 	}
 	s.Batch.QueuedDollars++
 	s.Batch.LastOutcome = "An extra print instruction is queued for the active batch."
+	s.UpdatedAt = now
+	return nil
+}
+
+func moduleLevel(s *State, id string) int {
+	for _, m := range s.Modules { if m.ID == id && m.Installed && !m.Jammed { return m.Level } }
+	return 0
+}
+
+func (s *State) Module(id string) *ModuleState {
+	for i := range s.Modules { if s.Modules[i].ID == id { return &s.Modules[i] } }
+	return nil
+}
+
+func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
+	var spec *ModuleSpec
+	for i := range ModuleCatalog { if ModuleCatalog[i].ID == id { spec = &ModuleCatalog[i]; break } }
+	if spec == nil { return errors.New("unknown module") }
+	m := s.Module(id)
+	if m == nil {
+		s.Modules = append(s.Modules, ModuleState{ID:id})
+		m = &s.Modules[len(s.Modules)-1]
+	}
+	if m.Jammed { return errors.New("this module is jammed and must be removed before it can be serviced") }
+	if m.Level >= spec.MaxLevel { return ErrUpgradeOwned }
+	cost := spec.Cost * int64(m.Level+1)
+	if s.CashOnHand < cost { return ErrInsufficient }
+	s.CashOnHand -= cost
+	m.Level++
+	m.Installed = true
+	if id == "queue_calibration" { s.Upgrades.WindowCalibration = true }
+	if id == "auto_injector" { s.Upgrades.PrintAutomation = true }
+	s.addEvent("module_upgrade", spec.Name+" advanced to revision "+fmt.Sprint(m.Level)+".", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+func (s *State) RemoveModule(id string, now time.Time) error {
+	m := s.Module(id)
+	if m == nil || !m.Installed { return errors.New("module is not installed") }
+	if m.Jammed { return errors.New("module is jammed; safe removal requires a specialist") }
+	m.Installed = false
+	if id == "queue_calibration" { s.Upgrades.WindowCalibration = false }
+	if id == "auto_injector" { s.Upgrades.PrintAutomation = false }
+	s.addEvent("module_removed", m.ID+" removed from the hardware rack.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+func (s *State) RemoveJammedLegacyModule(now time.Time) error {
+	m := s.Module("legacy_controller")
+	if m == nil || !m.Installed { return errors.New("no legacy module is installed") }
+	const removalCost int64 = 5000
+	if s.CashOnHand < removalCost { return ErrInsufficient }
+	s.CashOnHand -= removalCost
+	m.Installed = false
+	m.Jammed = false
+	s.addEvent("module_removed", "A specialist carefully removes the seized legacy controller without damaging the printer.", now)
 	s.UpdatedAt = now
 	return nil
 }
@@ -221,11 +316,12 @@ func (s *State) Advance(now time.Time) {
 	s.Batch.Progress++
 	s.Batch.WindowOpen = false
 	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
-	// Calibration improves recognition, but only adds a very small amount of time.
-	if s.Upgrades.WindowCalibration { windowEnd++ }
+	if level := moduleLevel(s, "window_expansion"); level > 0 { windowEnd += level }
+	if level := moduleLevel(s, "queue_calibration"); level > 0 { windowEnd++ }
+	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { windowEnd++ }
 	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
 		s.Batch.WindowOpen = true
-		if s.Upgrades.PrintAutomation && s.Batch.QueuedDollars == 0 && s.CashOnHand+PrintAmount <= s.CashCapacity {
+		if (moduleLevel(s, "auto_injector") > 0 || s.Upgrades.PrintAutomation) && s.Batch.QueuedDollars == 0 && s.CashOnHand+PrintAmount <= s.CashCapacity {
 			s.Batch.QueuedDollars = 1
 			s.Batch.LastOutcome = "The calibrated exploit queued an instruction automatically."
 		}
