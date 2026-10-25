@@ -463,7 +463,8 @@ func (a *App) moveMainSelection(delta int) {
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
 			a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
-			if a.selectedUpgrade >= a.rackLeftScroll+5 { a.rackLeftScroll = a.selectedUpgrade-4 }
+			visibleLeft:=max(2,(a.height-14)/3)
+			if a.selectedUpgrade >= a.rackLeftScroll+visibleLeft { a.rackLeftScroll = a.selectedUpgrade-visibleLeft+1 }
 			if a.selectedUpgrade < a.rackLeftScroll { a.rackLeftScroll = a.selectedUpgrade }
 		}
 	}
@@ -782,14 +783,15 @@ func (a *App) rackPanel(l uiLayout) string {
 			if row==1 {
 				// Keep revision and effect text visually separate from the module's color.
 				right.WriteString(labelStyle.Render(card[row])+"\n")
+			} else if m.ActivatedFlash && row==2 { right.WriteString(okStyle.Render(line)+"\n")
 			} else if row==len(card)-2 && (m.Booting || m.ActivatedFlash) {
 				right.WriteString(okStyle.Render(line)+"\n")
 			} else { right.WriteString(st.Render(line)+"\n") }
 		}
-		if m.ActivatedFlash { right.WriteString(okStyle.Render("             ACTIVATED!")+"\n") }
+
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
 	}
-	if len(installed)==0 || len(installed)<len(game.ModuleCatalog) {
+	if true {
 		inner:=max(16,min(rightWidth-5,36))-2
 		right.WriteString(labelStyle.Render("┌"+strings.Repeat("─",inner)+"┐")+"\n")
 		right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY","",inner)+"│")+"\n")
