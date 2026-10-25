@@ -208,3 +208,37 @@ func TestRemovedModuleCanBeReinstalledWithoutLosingRevision(t *testing.T) {
 		t.Fatalf("reinstalling should not charge for another revision: before=%d after=%d", cashAfterPurchase, s.CashOnHand)
 	}
 }
+
+
+func TestModuleEffectsWaitForBootAndReinstallReboots(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.RandomState = 42
+	s.CashOnHand = 100_000
+	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
+	m := s.Module("window_expansion")
+	if m == nil || !m.Installed || !m.Booting || m.BootTicksRemaining < 4 || m.BootTicksRemaining > 10 {
+		t.Fatalf("module should transfer to rack and boot for a bounded duration: %#v", m)
+	}
+	if got := moduleLevel(&s, "window_expansion"); got != 0 { t.Fatalf("booting module must not grant effects, got level %d", got) }
+	duration := m.BootTicksRemaining
+	for i:=0; i<duration; i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
+	if m.Booting { t.Fatal("module should finish booting after its active-time countdown") }
+	if got := moduleLevel(&s, "window_expansion"); got != 1 { t.Fatalf("module effect should activate after boot, got level %d", got) }
+	if !m.ActivatedFlash { t.Fatal("activation should show a brief confirmation state") }
+	if err := s.RemoveModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if !m.Booting || m.Level != 1 { t.Fatalf("reinstallation should reboot without losing revision: %#v",m) }
+}
+
+func TestUptimePersistsSeparatelyFromSimulationTick(t *testing.T) {
+	now := time.Unix(1,0)
+	s := NewState(now)
+	for i:=0;i<5;i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
+	if s.UptimeSeconds != 5 || s.Tick != 5 { t.Fatalf("unexpected initial uptime/tick: %d/%d",s.UptimeSeconds,s.Tick) }
+	s.ResetSystemUptime(now.Add(6*time.Second))
+	if s.UptimeSeconds != 0 { t.Fatalf("system reset should clear uptime, got %d",s.UptimeSeconds) }
+	if s.Tick != 5 { t.Fatalf("system uptime reset must not rewind simulation timers, got tick %d",s.Tick) }
+	s.Advance(now.Add(7*time.Second))
+	if s.UptimeSeconds != 1 || s.Tick != 6 { t.Fatalf("uptime should resume from reset while tick remains cumulative, got %d/%d",s.UptimeSeconds,s.Tick) }
+}
