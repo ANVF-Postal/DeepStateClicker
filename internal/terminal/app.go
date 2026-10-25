@@ -346,28 +346,33 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 					return nil
 				}
 
-				rightPaneStart := 3+leftWidth
+				rightPaneStart := 3 + leftWidth
 				if x >= rightPaneStart && x < rightPaneStart+rightWidth {
 					for row, paneTitle := range lines {
-						if strings.Contains(paneTitle, "INSTALLED RACK") {
-							slotOffset := y-(row+1)
-							if slotOffset < 0 {
-								return nil
-							}
-							visibleIndex := slotOffset/rackBayHeight
-							if visibleIndex < 0 || visibleIndex >= visibleRight {
-								return nil
-							}
-							slotIndex := startR+visibleIndex
+						if !strings.Contains(paneTitle, "INSTALLED RACK") {
+							continue
+						}
+
+						// Match each bay by its actual rendered six-row block.
+						// Do not infer the module solely from y/6: the pane title,
+						// scrollbar, and clipping can make that fragile.
+						for visibleIndex := 0; visibleIndex < visibleRight; visibleIndex++ {
+							slotIndex := startR + visibleIndex
 							if slotIndex < 0 || slotIndex >= len(bays) {
-								return nil
+								break
 							}
+							cardStartY := row + 1 + visibleIndex*rackBayHeight
+							if y < cardStartY || y >= cardStartY+rackBayHeight {
+								continue
+							}
+
 							mod := bays[slotIndex]
 							if mod == nil {
 								return nil
 							}
 							a.selectedRackModule = slotIndex
 							a.rackFocusRight = true
+
 							if mod.Jammed && rackControlWithin(line, x, "[REMOVE]") {
 								if a.rackRemovalArmedModule == mod.ID {
 									if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
@@ -376,24 +381,28 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 										a.message = "Specialist removed the legacy print controller. Additional rack bays are now available."
 									}
 									a.rackRemovalArmedModule = ""
+									a.rackRightScroll = 0
 								} else {
 									a.rackRemovalArmedModule = mod.ID
 									a.message = "Click [REMOVE] again to confirm specialist removal ($50.00)."
 								}
-							} else if !mod.Jammed && rackControlWithin(line, x, "[X]") {
-								if err := a.state.RemoveModule(mod.ID,time.Now()); err != nil {
+								return nil
+							}
+							if !mod.Jammed && rackControlWithin(line, x, "[X]") {
+								if err := a.state.RemoveModule(mod.ID, time.Now()); err != nil {
 									a.message = err.Error()
 								} else {
 									a.message = mod.ID+" removed from the rack."
 								}
 								a.rackRemovalArmedModule = ""
-							} else {
-								a.rackRemovalArmedModule = ""
+								a.rackRightScroll = min(a.rackRightScroll, max(0,len(a.rackBays())-visibleRight))
+								return nil
 							}
+							a.rackRemovalArmedModule = ""
 							return nil
 						}
+						return nil
 					}
-					return nil
 				}
 			}
 			switch {
