@@ -410,12 +410,12 @@ func (a *App) moveMainSelection(delta int) {
 		if a.rackFocusRight {
 			installed := a.installedModules()
 			a.selectedRackModule = max(0, min(max(0,len(installed)-1), a.selectedRackModule+delta))
-			if a.selectedRackModule >= a.trackRightScroll+4 { a.trackRightScroll = a.selectedRackModule-3 }
-			if a.selectedRackModule < a.trackRightScroll { a.trackRightScroll = a.selectedRackModule }
+			if a.selectedRackModule >= a.rackRightScroll+4 { a.rackRightScroll = a.selectedRackModule-3 }
+			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
 			a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
-			if a.selectedUpgrade >= a.trackLeftScroll+5 { a.trackLeftScroll = a.selectedUpgrade-4 }
-			if a.selectedUpgrade < a.trackLeftScroll { a.trackLeftScroll = a.selectedUpgrade }
+			if a.selectedUpgrade >= a.rackLeftScroll+5 { a.rackLeftScroll = a.selectedUpgrade-4 }
+			if a.selectedUpgrade < a.rackLeftScroll { a.rackLeftScroll = a.selectedUpgrade }
 		}
 	}
 }
@@ -500,7 +500,7 @@ func (a *App) gameView() string {
 		}
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
-	panelLines := max(4, l.TickerY-l.ContentY-4)
+	panelLines := max(4, l.TickerY-l.ContentY-2)
 	if a.message != "" { panelLines-- }
 	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
@@ -626,7 +626,7 @@ func (a *App) rackPanel(l uiLayout) string {
 	visibleRight := max(2,min(4,(l.Height-16)/6))
 	var left,right strings.Builder
 	left.WriteString(titleStyle.Render("AVAILABLE MODULES")+"\n")
-	start := a.trackLeftScroll
+	start := a.rackLeftScroll
 	end := min(len(game.ModuleCatalog),start+visibleLeft)
 	if start>0 { left.WriteString(labelStyle.Render("  ▲ MORE ABOVE")+"\n") }
 	for i:=start;i<end;i++ {
@@ -645,7 +645,7 @@ func (a *App) rackPanel(l uiLayout) string {
 	left.WriteString("\n"+labelStyle.Render("←/→ FOCUS · ↑/↓ SCROLL")+"\n")
 	right.WriteString(titleStyle.Render("INSTALLED RACK")+"\n")
 	if len(installed)==0 { right.WriteString(labelStyle.Render("No modules installed.")+"\n") }
-	startR:=a.trackRightScroll
+	startR:=a.rackRightScroll
 	endR:=min(len(installed),startR+visibleRight)
 	if startR>0 { right.WriteString(labelStyle.Render("  ▲ MORE ABOVE")+"\n") }
 	for i:=startR;i<endR;i++ {
