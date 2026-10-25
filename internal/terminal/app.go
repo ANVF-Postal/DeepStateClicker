@@ -644,46 +644,53 @@ func (a *App) printPanel(l uiLayout) string {
 }
 
 func (a *App) upgradesPanel(l uiLayout) string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("MAIN  /  UPGRADES")+"\n")
-	b.WriteString(labelStyle.Render("MODULE DEVELOPMENT  ·  SELECT AN ITEM, REVIEW ITS REVISION, THEN BUY")+"\n\n")
-	leftWidth := max(22,min(34,l.Width/3))
-	var left,right strings.Builder
-	left.WriteString(titleStyle.Render("MODULE CATALOGUE")+"\n")
-	for i,spec := range game.ModuleCatalog {
-		status := "AVAILABLE"
+	leftWidth := max(28, min(38, l.Width/3))
+	rightWidth := max(28, l.Width-leftWidth-7)
+	var left, right strings.Builder
+	for i, spec := range game.ModuleCatalog {
 		m := a.state.Module(spec.ID)
-		if m != nil && m.Installed { status = fmt.Sprintf("REV %d",m.Level) }
-		if spec.ID=="obfuscation" && a.state.Risk<25 { status="LOCKED" }
-		line := truncate(fmt.Sprintf("%s %s",map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],spec.Name),leftWidth-2)
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color)).Background(lipgloss.Color("#101010"))
-		if i==a.selectedUpgrade { style = style.Bold(true).Underline(true) }
-		left.WriteString(style.Render(line)+"\n")
+		status := "AVAILABLE"
+		if m != nil && m.Level > 0 {
+			status = fmt.Sprintf("REV %02d", m.Level)
+			if m.Installed { status += " INSTALLED" } else { status += " STORED" }
+		}
+		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
+		name := spec.Name
+		if m != nil && m.Level > 0 { name += "  Rev " + fmt.Sprintf("%02d",m.Level) }
+		name = truncate(fmt.Sprintf("%s %s", map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],name),leftWidth-4)
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
+		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
+		left.WriteString(style.Render(name)+"\n")
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
 	spec := game.ModuleCatalog[max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade))]
 	m := a.state.Module(spec.ID)
 	level := 0
-	if m!=nil { level=m.Level }
-	right.WriteString(titleStyle.Render(spec.Name)+"\n\n")
-	right.WriteString(wrapText(spec.Description,max(20,l.Width-leftWidth-10))+"\n\n")
-	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %d / %d",level,spec.MaxLevel))+"\n")
+	if m != nil { level = m.Level }
+	right.WriteString(titleStyle.Render(spec.Name)+"\n")
+	right.WriteString(wrapText(spec.Description,max(18,rightWidth-5))+"\n")
+	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d",level,spec.MaxLevel))+"\n")
 	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5",spec.Suspicion))+"\n")
 	if spec.ID=="obfuscation" && a.state.Risk<25 {
-		right.WriteString(dangerStyle.Render("REQUIREMENT: operation scrutiny 25+")+"\n")
-	} else if m!=nil && m.Level>0 && !m.Installed {
-		right.WriteString(labelStyle.Render("MODULE REMOVED FROM RACK")+"\n\n")
+		right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
+	} else if m!=nil && m.Level>0 && m.Installed {
+		cost := spec.Cost*int64(level+1)
+		if level >= spec.MaxLevel { right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
+		} else { right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n") }
+		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE MODULE")+"\n")
+	} else if m!=nil && m.Level>0 {
+		right.WriteString(labelStyle.Render("MODULE REMOVED FROM RACK")+"\n")
 		right.WriteString(selectedStyle.Render("[ENTER / B] REINSTALL MODULE")+"\n")
-	} else if level>=spec.MaxLevel {
-		right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
 	} else {
-		cost:=spec.Cost*int64(level+1)
-		right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n\n")
+		right.WriteString(labelStyle.Render("ACQUISITION COST: $"+money(spec.Cost))+"\n")
 		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE MODULE")+"\n")
 	}
-	right.WriteString("\n"+labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),lipgloss.NewStyle().Width(max(20,l.Width-leftWidth-5)).PaddingLeft(1).Render(right.String())))
-	return b.String()
+	right.WriteString(labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
+	leftPane := windowPane("MODULE CATALOG", left.String(), leftWidth)
+	rightPane := windowPane("MODULE DETAILS", right.String(), rightWidth)
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(leftPane),
+		lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightPane))
 }
 
 func (a *App) rackPanel(l uiLayout) string {
@@ -692,54 +699,106 @@ func (a *App) rackPanel(l uiLayout) string {
 	installed := a.installedModules()
 	b.WriteString(labelStyle.Render(fmt.Sprintf("BAYS IN USE: %d  ·  RACK CAPACITY: UNLIMITED",len(installed)))+"\n")
 	leftWidth := max(24,min(38,l.Width/3))
+	rightWidth := max(28,l.Width-leftWidth-7)
 	visibleLeft := max(2,(l.Height-14)/3)
 	visibleRight := max(2,(l.Height-14)/6)
 	var left,right strings.Builder
-	left.WriteString(titleStyle.Render("AVAILABLE MODULES")+"\n")
 	start := a.rackLeftScroll
 	end := min(len(game.ModuleCatalog),start+visibleLeft)
-	if start>0 { left.WriteString(labelStyle.Render("  ▲ MORE ABOVE")+"\n") }
 	for i:=start;i<end;i++ {
 		spec:=game.ModuleCatalog[i]
 		m:=a.state.Module(spec.ID)
 		status:="NEW"
-		if m!=nil && m.Installed { status=fmt.Sprintf("REV %d INSTALLED",m.Level) }
+		if m!=nil && m.Level>0 { status=fmt.Sprintf("REV %02d",m.Level); if m.Installed { status+=" IN RACK" } else { status+=" STORED" } }
 		if spec.ID=="obfuscation" && a.state.Risk<25 { status="LOCKED" }
-		name:=truncate(fmt.Sprintf("%s %s",map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],spec.Name),leftWidth-2)
-		style:=lipgloss.NewStyle().Foreground(lipgloss.Color("#080808")).Background(lipgloss.Color(spec.Color)).Padding(0,1)
-		if i!=a.selectedUpgrade { style=style.Faint(true) }
+		name:=truncate(fmt.Sprintf("%s %s",map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],spec.Name),leftWidth-4)
+		style:=lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
+		if i==a.selectedUpgrade { style=style.Bold(true).Underline(true) }
 		left.WriteString(style.Render(name)+"\n")
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
-	if end<len(game.ModuleCatalog) { left.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
-	left.WriteString("\n"+labelStyle.Render("←/→ FOCUS · ↑/↓ SCROLL")+"\n")
+	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth)
 	right.WriteString(titleStyle.Render("INSTALLED RACK")+"\n")
-	if len(installed)==0 { right.WriteString(labelStyle.Render("No modules installed.")+"\n") }
 	startR:=a.rackRightScroll
 	endR:=min(len(installed),startR+visibleRight)
-	if startR>0 { right.WriteString(labelStyle.Render("  ▲ MORE ABOVE")+"\n") }
 	for i:=startR;i<endR;i++ {
 		m:=installed[i]
 		name:=m.ID
 		color:=teal
 		for _,spec:=range game.ModuleCatalog { if spec.ID==m.ID { name=spec.Name; color=lipgloss.Color(spec.Color); break } }
 		if m.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER"; color=orange }
-		stateLabel:=fmt.Sprintf("REVISION %02d",m.Level)
-		if m.Jammed { stateLabel="JAMMED · SPECIALIST REMOVAL" }
-		blockWidth:=max(18,min(l.Width-leftWidth-8,38))
-		block:=[]string{"┌"+strings.Repeat("─",blockWidth-2)+"┐","│ "+truncate(name,blockWidth-4)+strings.Repeat(" ",max(0,blockWidth-4-lipgloss.Width(truncate(name,blockWidth-4))))+" │","│ "+truncate(stateLabel,blockWidth-4)+strings.Repeat(" ",max(0,blockWidth-4-lipgloss.Width(truncate(stateLabel,blockWidth-4))))+" │"}
-		flicker:="*  *  *  *  *  *"
-		if a.uiFrame%7<3 { flicker="* *   *  * *  *" }
-		block=append(block,"│ "+truncate(flicker,blockWidth-4)+strings.Repeat(" ",max(0,blockWidth-4-lipgloss.Width(truncate(flicker,blockWidth-4))))+" │","└"+strings.Repeat("─",blockWidth-2)+"┘")
+		blockWidth:=max(20,min(rightWidth-3,44))
+		inner:=blockWidth-2
+		remove:=""
+		if !m.Jammed { remove="[X]" }
+		top:= "┌"+padCells(" "+truncate(name,inner-7),remove,inner)+"┐"
+		rev:=fmt.Sprintf(" REV %02d",m.Level)
+		gain:=""
+		if !m.Jammed { gain=moduleGain(m.ID,m.Level) }
+		revLine:="│"+padCells(rev,gain,inner)+"│"
+		card:=[]string{top,revLine}
+		if m.Booting {
+			card=append(card,"│"+padCells(" "+bootMessage(m),"",inner)+"│")
+			barWidth:=max(6,inner-2)
+			done:=m.BootTicksTotal-m.BootTicksRemaining
+			filled:=min(barWidth,max(0,done*barWidth/max(1,m.BootTicksTotal)))
+			bar:="["+strings.Repeat("█",filled)+strings.Repeat("·",barWidth-filled)+"]"
+			card=append(card,"│"+padCells(" "+bar,"",inner)+"│")
+		} else if !m.Jammed {
+			flicker:="*  *  *  *  *"
+			if a.uiFrame%7<3 { flicker="* *   *  * *" }
+			card=append(card,"│"+padCells(" "+flicker,"",inner)+"│")
+		} else { card=append(card,"│"+padCells(" JAMMED · SPECIALIST REMOVAL","",inner)+"│") }
+		card=append(card,"└"+strings.Repeat("─",inner)+"┘")
 		st:=lipgloss.NewStyle().Foreground(color)
 		if i==a.selectedRackModule && a.rackFocusRight { st=st.Bold(true) }
-		right.WriteString(st.Render(strings.Join(block,"\n"))+"\n")
+		for row,line:=range card {
+			if row==1 {
+				// Keep revision and effect text visually separate from the module's color.
+				right.WriteString(st.Render("│"+padCells(rev,"",inner)[:inner]+"│")+"
+")
+			} else if row==len(card)-2 && m.Booting {
+				right.WriteString(okStyle.Render(line)+"
+")
+			} else { right.WriteString(st.Render(line)+"
+") }
+		}
+		if m.Booting && m.BootTicksRemaining==1 { right.WriteString(okStyle.Render("             ACTIVATED!")+"\n") }
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
 	}
+	if len(installed)==0 || len(installed)<len(game.ModuleCatalog) {
+		inner:=max(16,min(rightWidth-5,36))-2
+		right.WriteString(labelStyle.Render("┌"+strings.Repeat("─",inner)+"┐")+"\n")
+		right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY","",inner)+"│")+"\n")
+		right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n")
+	}
 	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
-	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK")+"\n")
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),lipgloss.NewStyle().Width(max(22,l.Width-leftWidth-5)).PaddingLeft(1).Render(right.String())))
+	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK"))
+	rightPane:=windowPane("RACK BUS",right.String(),rightWidth)
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(leftPane),lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightPane)))
 	return b.String()
+}
+
+func windowPane(title, content string, width int) string {
+	width=max(18,width)
+	inner:=width-2
+	topLabel:="┌─ "+title+" "
+	top:=topLabel+strings.Repeat("─",max(0,width-lipgloss.Width(topLabel)-1))+"┐"
+	var out strings.Builder
+	out.WriteString(labelStyle.Render(top)+"\n")
+	for _,line:=range strings.Split(strings.TrimSuffix(content,"\n"),"\n") {
+		if lipgloss.Width(line)>inner { line=truncate(ansiSequences.ReplaceAllString(line,""),inner) }
+		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ",max(0,inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
+	}
+	out.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘"))
+	return out.String()
+}
+
+func padCells(left,right string,width int) string {
+	left=truncate(left,max(0,width-lipgloss.Width(right)))
+	gap:=max(1,width-lipgloss.Width(left)-lipgloss.Width(right))
+	if lipgloss.Width(left)+lipgloss.Width(right)>=width { gap=0 }
+	return left+strings.Repeat(" ",gap)+right+strings.Repeat(" ",max(0,width-lipgloss.Width(left)-lipgloss.Width(right)-gap))
 }
 
 func (a *App) storePanel(l uiLayout) string {
