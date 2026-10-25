@@ -125,7 +125,7 @@ func TestUppercaseRackShortcutAndMainRackClick(t *testing.T) {
 	app.mainView = "print"
 	lines := plainViewLines(app.View())
 	for y, line := range lines {
-		x := strings.Index(line, "[R] HARDWARE RACK")
+		x := cellOffset(line, "[R] HARDWARE RACK")
 		if x >= 0 {
 			app.handleMouse(x, y)
 			if app.mainView != "rack" {
@@ -183,13 +183,13 @@ func TestUpgradeBuyButtonRequiresSecondClick(t *testing.T) {
 	app.selectedUpgrade = 0
 
 	y, line := rackLine(t, app, "[ENTER / B] BUY / UPGRADE")
-	x := strings.Index(line, "[ENTER / B] BUY / UPGRADE")
+	x := cellOffset(line, "[ENTER / B] BUY / UPGRADE")
 	app.handleMouse(x, y)
 	if app.state.Module("window_expansion") != nil {
 		t.Fatal("first click should only arm the purchase")
 	}
 	y, line = rackLine(t, app, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
-	x = strings.Index(line, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
+	x = cellOffset(line, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
 	app.handleMouse(x, y)
 	m := app.state.Module("window_expansion")
 	if m == nil || m.Level != 1 || m.Installed {
@@ -216,7 +216,7 @@ func TestRackCatalogueSelectThenClickInstallsAndSymbolRemoves(t *testing.T) {
 	headerY, _ := rackLine(t, app, "┌─ MODULES")
 	y := headerY + 1
 	_, line := rackLine(t, app, "WINDOW EXPANSION")
-	nameX := strings.Index(line, "WINDOW EXPANSION")
+	nameX := cellOffset(line, "WINDOW EXPANSION")
 	app.handleMouse(nameX, y)
 	m := app.state.Module("window_expansion")
 	if !app.rackCatalogSelected || m.Installed {
@@ -272,7 +272,7 @@ func TestRackRightModuleXRemovesModule(t *testing.T) {
 	app.selectRackModule("window_expansion")
 
 	y, line := rackLineWithContext(t, app, "WINDOW EXPANSION", "[X]")
-	x := strings.Index(line, "[X]")
+	x := cellOffset(line, "[X]")
 	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("window_expansion"); m.Installed {
 		t.Fatalf("clicking the actual module X should remove it: %#v (x=%d y=%d line=%q)", m, x, y, line)
@@ -291,7 +291,7 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 	app.rackRightScroll = max(0,app.rackRightScroll)
 
 	y, line := rackLine(t, app, "$50 - [REMOVE]")
-	x := strings.Index(line, "[REMOVE]")
+	x := cellOffset(line, "[REMOVE]")
 	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed {
 		t.Fatalf("first click must only arm the actual specialist button: %#v (line=%q)", m, line)
@@ -301,7 +301,7 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 	}
 
 	y, line = rackLine(t, app, "$50 - [REMOVE]")
-	x = strings.Index(line, "[REMOVE]")
+	x = cellOffset(line, "[REMOVE]")
 	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("legacy_controller"); m == nil || m.Installed {
 		t.Fatalf("second click should confirm removal through Update: %#v (line=%q)", m, line)
@@ -479,5 +479,36 @@ func TestRemovingLegacyModuleButtonCreatesBlankBayCards(t *testing.T) {
 	}
 	if !foundEmptyBay {
 		t.Fatal("rack should render at least one empty bay as a full blank enclosure")
+	}
+}
+
+
+func TestMouseHitboxesUseTerminalCellsNotUTF8ByteOffsets(t *testing.T) {
+	line := "  │┌─ RACK BUS │        [X]"
+	byteOffset := strings.Index(line, "[X]")
+	cell := cellOffset(line, "[X]")
+	if byteOffset == cell {
+		t.Fatalf("test line should have different byte and cell offsets: byte=%d cell=%d", byteOffset, cell)
+	}
+	if !mouseWithin(line, cell, "[X]") {
+		t.Fatalf("mouse target should be hit at terminal cell %d: %q", cell, line)
+	}
+	if mouseWithin(line, cell-1, "[X]") {
+		t.Fatalf("click one cell before the target should miss: cell=%d line=%q", cell, line)
+	}
+	if !rackControlWithin(line, cell-2, "[X]") {
+		t.Fatalf("expanded rack target should include two cells before the symbol")
+	}
+}
+
+func TestRackPaneOmitsRedundantControlFooter(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "rack"
+	view := strings.Join(plainViewLines(app.View()), "\n")
+	if strings.Contains(view, "[X] REMOVE MODULE") || strings.Contains(view, "CONFIRM SPECIALIST") {
+		t.Fatal("rack pane should not contain the redundant control footer")
 	}
 }
