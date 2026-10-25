@@ -314,11 +314,23 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				}
 			}
 			switch {
-			case strings.Contains(line, "[U] UPGRADES"): a.mainView = "upgrades"; a.selectedUpgrade = 0
-			case strings.Contains(line, "[R] HARDWARE RACK") && a.hasPurchasedModule(): a.mainView = "rack"; a.rackFocusRight = false
-			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED") && mouseWithin(line,x,"[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
-			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
-			case a.mainView == "upgrades" && mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE"): a.activateMainSelection()
+			// MAIN places both controls on the same row. Check the actual
+			// label under the pointer so the R hitbox cannot be swallowed by U.
+			case mouseWithin(line, x, "[R] HARDWARE RACK") && a.hasPurchasedModule():
+				a.mainView = "rack"
+				a.rackFocusRight = false
+				a.message = ""
+			case mouseWithin(line, x, "[U] UPGRADES"):
+				a.mainView = "upgrades"
+				a.selectedUpgrade = 0
+				a.message = ""
+			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED") && mouseWithin(line, x, "[ENTER] ACQUIRE / REMOVE SELECTED"):
+				a.activateMainSelection()
+			case mouseWithin(line, x, "[B] BACK TO OPERATIONS"):
+				a.mainView = "print"
+				a.message = ""
+			case a.mainView == "upgrades" && mouseWithin(line, x, "[ENTER / B] BUY / UPGRADE"):
+				a.activateMainSelection()
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
