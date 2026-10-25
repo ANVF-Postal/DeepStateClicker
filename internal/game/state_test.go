@@ -146,3 +146,60 @@ func TestWindowCalibrationAddsOnlyOneTick(t *testing.T) {
 		t.Fatal("calibration should close after exactly one extra tick")
 	}
 }
+
+
+func TestOverflowDoesNotBlockInjectionAndRaisesRisk(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = s.CashCapacity
+	s.Batch.Progress = BatchCycleTicks - 1
+	s.Batch.WindowOpen = true
+	if err := s.QueueExploit(now); err != nil {
+		t.Fatalf("overflow should not block an otherwise valid injection: %v", err)
+	}
+	s.Advance(now.Add(time.Second))
+	if s.CashOnHand != s.CashCapacity+PrintAmount {
+		t.Fatalf("expected cash to exceed capacity, got cash=%d capacity=%d", s.CashOnHand, s.CashCapacity)
+	}
+	if s.Risk < 1 {
+		t.Fatalf("overflow should increase risk, got %d", s.Risk)
+	}
+	if !s.StorageUnlocked {
+		t.Fatal("storage should unlock when capital reaches capacity")
+	}
+}
+
+func TestLockboxesIncreaseCapacityAndClutterReducesEfficiency(t *testing.T) {
+	s := NewState(time.Unix(1, 0))
+	s.CashOnHand = 100_000
+	initialCapacity := s.CashCapacity
+	for i := 0; i < 3; i++ {
+		if err := s.BuyLockbox(time.Unix(int64(i+2), 0)); err != nil { t.Fatal(err) }
+	}
+	if s.CashCapacity != initialCapacity+3*LockboxCapacity {
+		t.Fatalf("first three lockboxes should provide full capacity, got %d", s.CashCapacity)
+	}
+	if s.Risk != 0 { t.Fatalf("ordinary lockboxes should not yet add clutter risk, got %d", s.Risk) }
+	if err := s.BuyLockbox(time.Unix(5, 0)); err != nil { t.Fatal(err) }
+	if s.CashCapacity != initialCapacity+3*LockboxCapacity+350_000 {
+		t.Fatalf("additional lockbox should have diminished capacity, got %d", s.CashCapacity)
+	}
+	if s.Risk != 1 { t.Fatalf("clutter should add risk, got %d", s.Risk) }
+}
+
+func TestRemovedModuleCanBeReinstalledWithoutLosingRevision(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = 10_000
+	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := s.RemoveModule("window_expansion", now); err != nil { t.Fatal(err) }
+	cashAfterPurchase := s.CashOnHand
+	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
+	m := s.Module("window_expansion")
+	if m == nil || !m.Installed || m.Level != 1 {
+		t.Fatalf("expected same revision to be reinstalled, got %#v", m)
+	}
+	if s.CashOnHand != cashAfterPurchase {
+		t.Fatalf("reinstalling should not charge for another revision: before=%d after=%d", cashAfterPurchase, s.CashOnHand)
+	}
+}
