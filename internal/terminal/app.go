@@ -368,7 +368,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 							}
 							a.selectedRackModule = slotIndex
 							a.rackFocusRight = true
-							if mod.Jammed && mouseWithin(line,x,"[REMOVE]") {
+							if mod.Jammed && rackControlWithin(line, x, "[REMOVE]") {
 								if a.rackRemovalArmedModule == mod.ID {
 									if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
 										a.message = err.Error()
@@ -380,7 +380,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 									a.rackRemovalArmedModule = mod.ID
 									a.message = "Click [REMOVE] again to confirm specialist removal ($50.00)."
 								}
-							} else if !mod.Jammed && mouseWithin(line,x,"[X]") {
+							} else if !mod.Jammed && rackControlWithin(line, x, "[X]") {
 								if err := a.state.RemoveModule(mod.ID,time.Now()); err != nil {
 									a.message = err.Error()
 								} else {
@@ -1022,31 +1022,51 @@ func visibleRackBays(paneHeight int) int {
 	return max(1, (max(1, paneHeight-2)-2)/rackBayHeight)
 }
 
-// rackBays returns populated bays first, followed by visible empty slots.
-// Removing the jammed legacy controller exposes two additional bays.
+// rackBays models the rack as physical slots, not a list of cards. Ordinary
+// modules occupy the upper slots, empty bays follow, and the jammed legacy
+// controller is always the bottom-most slot. Removing it leaves its former
+// position empty and opens two additional slots.
 func (a *App) rackBays() []*game.ModuleState {
-	var bays []*game.ModuleState
+	var ordinary []*game.ModuleState
+	var jammed *game.ModuleState
 	for i := range a.state.Modules {
 		m := &a.state.Modules[i]
-		if m.Installed && !m.Jammed {
-			bays = append(bays, m)
+		if !m.Installed {
+			continue
+		}
+		if m.Jammed {
+			jammed = m
+		} else {
+			ordinary = append(ordinary, m)
 		}
 	}
-	for i := range a.state.Modules {
-		m := &a.state.Modules[i]
-		if m.Installed && m.Jammed {
-			bays = append(bays, m)
-		}
-	}
+
 	capacity := 3
-	legacy := a.state.Module("legacy_controller")
-	if legacy == nil || !legacy.Installed {
+	if jammed == nil {
 		capacity = 5
 	}
-	// Always leave at least one empty bay as the next insertion target.
-	capacity = max(capacity, len(bays)+1)
-	for len(bays) < capacity {
+	// Grow only when the installed module count requires it, and keep at
+	// least one additional bay available for the next insertion.
+	minimum := len(ordinary) + 1
+	if jammed != nil {
+		minimum = len(ordinary) + 1 // the legacy controller occupies the final slot
+	}
+	capacity = max(capacity, minimum)
+	if jammed != nil && capacity < len(ordinary)+1 {
+		capacity = len(ordinary)+1
+	}
+
+	bays := make([]*game.ModuleState, 0, capacity)
+	bays = append(bays, ordinary...)
+	for len(bays) < capacity-1 && jammed != nil {
 		bays = append(bays, nil)
+	}
+	if jammed != nil {
+		bays = append(bays, jammed)
+	} else {
+		for len(bays) < capacity {
+			bays = append(bays, nil)
+		}
 	}
 	return bays
 }
@@ -1481,9 +1501,17 @@ func visiblePaneText(line string, start, width int) string {
 	return string(runes[start:end])
 }
 
-func mouseWithin(line string,x int,label string) bool {
-	at:=strings.Index(line,label)
-	return at>=0 && x>=at && x<at+len(label)
+func mouseWithin(line string, x int, label string) bool {
+	at := strings.Index(line, label)
+	return at >= 0 && x >= at && x < at+len(label)
+}
+
+// rackControlWithin expands a tiny visual control into a more forgiving hit
+// target. This matters for terminal emulators whose mouse reports land on an
+// adjacent cell at the edge of a bordered pane.
+func rackControlWithin(line string, x int, label string) bool {
+	at := strings.Index(line, label)
+	return at >= 0 && x >= max(0, at-2) && x < at+len(label)+2
 }
 
 func (a *App) mouseOnTabRow(y int) bool {
