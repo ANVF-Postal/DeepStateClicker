@@ -408,8 +408,8 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 		}
 	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "t": if a.state.StorageUnlocked { _ = a.state.OpenTab(game.TabStorage); a.message = "" }
-	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.message = "" }
-	case "r": if a.state.CurrentTab == game.TabPrint && a.hasPurchasedModule() { a.mainView = "rack"; a.rackFocusRight = false; a.message = "" } else if a.state.CurrentTab == game.TabPrint { a.message = "Hardware rack unlocks after you acquire your first module." }
+	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.upgradeBuyArmed = false; a.message = "" }
+	case "r": if a.state.CurrentTab == game.TabPrint && a.hasPurchasedModule() { a.mainView = "rack"; a.rackFocusRight = false; a.rackCatalogSelected = false; a.rackRemovalArmedModule = ""; a.message = "" } else if a.state.CurrentTab == game.TabPrint { a.message = "Hardware rack unlocks after you acquire your first module." }
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -577,32 +577,87 @@ func formatUptime(seconds int64) string {
 
 func (a *App) activateMainSelection() {
 	now := time.Now()
-	if a.mainView == "upgrades" { a.buySelectedModule(now); return }
-	if a.mainView == "rack" {
-		if a.rackFocusRight {
-			installed := a.installedModules()
-			if a.selectedRackModule >= 0 && a.selectedRackModule < len(installed) {
-				m := installed[a.selectedRackModule]
-				var err error
-				if m.Jammed { err = a.state.RemoveJammedLegacyModule(now) } else { err = a.state.RemoveModule(m.ID,now) }
-				if err != nil { a.message = err.Error() } else { a.message = "Module removed from rack." }
-			}
-		} else {
-			if a.selectedUpgrade >= 0 && a.selectedUpgrade < len(game.ModuleCatalog) {
-				spec := game.ModuleCatalog[a.selectedUpgrade]
-				if m := a.state.Module(spec.ID); m != nil && m.Installed {
-					a.message = "Module already installed. Open UPGRADES to improve its revision."
-				} else if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" transferred to rack; initialization sequence started."; a.rackFocusRight = true; a.selectRackModule(spec.ID) }
-			}
+	if a.mainView == "upgrades" {
+		a.buySelectedModule(now)
+		return
+	}
+	if a.mainView != "rack" {
+		return
+	}
+	if a.rackFocusRight {
+		installed := a.installedModules()
+		if a.selectedRackModule < 0 || a.selectedRackModule >= len(installed) {
+			return
 		}
+		m := installed[a.selectedRackModule]
+		var err error
+		if m.Jammed {
+			err = a.state.RemoveJammedLegacyModule(now)
+		} else {
+			err = a.state.RemoveModule(m.ID, now)
+		}
+		if err != nil {
+			a.message = err.Error()
+		} else {
+			a.message = "Module removed from rack."
+		}
+		a.rackRemovalArmedModule = ""
+		return
+	}
+	if !a.rackCatalogSelected {
+		a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade))
+		a.rackCatalogSelected = true
+		a.message = "Selected "+game.ModuleCatalog[a.selectedUpgrade].Name+". Press ENTER to install/remove."
+		return
+	}
+	a.toggleSelectedRackCatalogModule(now)
+}
+
+func (a *App) toggleSelectedRackCatalogModule(now time.Time) {
+	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) {
+		return
+	}
+	spec := game.ModuleCatalog[a.selectedUpgrade]
+	m := a.state.Module(spec.ID)
+	if m == nil || m.Level <= 0 {
+		a.message = "Purchase "+spec.Name+" in UPGRADES before installing it."
+		return
+	}
+	var err error
+	if m.Installed {
+		err = a.state.RemoveModule(spec.ID, now)
+		if err == nil {
+			a.message = spec.Name+" removed from the rack."
+		}
+	} else {
+		err = a.state.InstallModule(spec.ID, now)
+		if err == nil {
+			a.message = spec.Name+" inserted. Initialization sequence started."
+			a.rackFocusRight = true
+			a.selectRackModule(spec.ID)
+		}
+	}
+	if err != nil {
+		a.message = err.Error()
 	}
 }
 
 func (a *App) buySelectedModule(now time.Time) {
-	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) { return }
+	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) {
+		return
+	}
 	spec := game.ModuleCatalog[a.selectedUpgrade]
-	if spec.ID == "obfuscation" && a.state.Risk < 25 { a.message = "Signal obfuscation remains unavailable until scrutiny increases."; return }
-	if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { m:=a.state.Module(spec.ID); a.message = spec.Name+" transferred to rack; initialization sequence started (REV "+fmt.Sprint(m.Level)+")."; a.mainView = "rack"; a.rackFocusRight = true; a.selectRackModule(spec.ID) }
+	if spec.ID == "obfuscation" && a.state.Risk < 25 {
+		a.message = "Signal obfuscation remains unavailable until scrutiny increases."
+		return
+	}
+	if err := a.state.PurchaseModule(spec.ID, now); err != nil {
+		a.message = err.Error()
+	} else {
+		m := a.state.Module(spec.ID)
+		a.message = spec.Name+" revision "+fmt.Sprint(m.Level)+" purchased. Ready for installation in HARDWARE RACK."
+	}
+	a.upgradeBuyArmed = false
 }
 
 func lWidthForRack(width int) int { return max(24,min(38,width/3)) }
