@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -361,6 +362,7 @@ func (a *App) selectMessage(delta int) {
 }
 
 func (a *App) handleGameKey(key string) tea.Cmd {
+	key = strings.ToLower(key)
 	now := time.Now()
 	switch key {
 	case "p", " ", "x":
@@ -438,10 +440,9 @@ func stableTerminalFrame(view string, width, height int) string {
 	}
 	for i, line := range lines {
 		if lipgloss.Width(line) > width {
-			// All normal screens are laid out to fit. This is only a last
-			// safety net for unusually narrow terminals, where retaining
-			// partial ANSI styling is less important than preventing wraps.
-			line = truncate(ansiSequences.ReplaceAllString(line, ""), width)
+			// Last-resort clipping is ANSI-aware: terminal style sequences
+			// must never be cut in half and printed as visible characters.
+			line = truncate(line, width)
 		}
 		if cells := lipgloss.Width(line); cells < width {
 			line += strings.Repeat(" ", width-cells)
@@ -738,19 +739,17 @@ func (a *App) upgradesPanel(l uiLayout) string {
 	var left, right strings.Builder
 	for i, spec := range game.ModuleCatalog {
 		m := a.state.Module(spec.ID)
-		status, revision := "AVAILABLE", ""
+		revision := ""
 		if m != nil && m.Level > 0 {
 			revision = fmt.Sprintf(" Rev %02d", m.Level)
-			switch { case m.Booting: status = "BOOTING"; case m.Installed: status = "IN RACK"; default: status = "REMOVED" }
 		}
-		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
 		marker := " "
 		if i == a.selectedUpgrade { marker = "›" }
-		nameWidth := max(8, leftWidth-4-lipgloss.Width(revision)-lipgloss.Width(status)-2)
+		nameWidth := max(8, leftWidth-4-lipgloss.Width(revision))
 		name := truncate(marker+" "+spec.Name, nameWidth)
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
 		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
-		left.WriteString(padCells(style.Render(name)+labelStyle.Render(revision), labelStyle.Render(status), leftWidth-2)+"\n")
+		left.WriteString(padCells(style.Render(name), labelStyle.Render(revision), leftWidth-2)+"\n")
 	}
 	idx := max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade))
 	spec := game.ModuleCatalog[idx]
@@ -879,7 +878,7 @@ func windowPane(title, content string, width, height int) string {
 	var out strings.Builder
 	out.WriteString(labelStyle.Render(top)+"\n")
 	for _, line := range lines {
-		if lipgloss.Width(line) > inner { line = truncate(ansiSequences.ReplaceAllString(line, ""), inner) }
+		if lipgloss.Width(line) > inner { line = truncate(line, inner) }
 		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
 	}
 	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
@@ -1146,11 +1145,47 @@ func tickerText(s game.State,width int, frame int64) string {
 	loop:=string(append(append([]rune{},runes...),append([]rune("     "),runes...)...))
 	return truncate(string([]rune(loop)[offset:]),width)
 }
-func truncate(s string,width int) string {
-	if width<1 { return "" }
-	r:=[]rune(s); if len(r)<=width { return s }
-	if width<=1 { return string(r[:width]) }
-	return string(r[:width-1])+"…"
+func truncate(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	plain := ansiSequences.ReplaceAllString(s, "")
+	if lipgloss.Width(plain) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+
+	// Copy ANSI control sequences whole, while counting only visible rune
+	// cells. Truncating the raw string by rune count can split true-colour
+	// escapes (for example ESC[38;2;119;121;112m) and corrupt the whole frame.
+	target := width - 1
+	var out strings.Builder
+	used := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if loc := ansiSequences.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
+				out.WriteString(s[i : i+loc[1]])
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		runeText := string(r)
+		cells := lipgloss.Width(runeText)
+		if used+cells > target {
+			break
+		}
+		out.WriteString(runeText)
+		used += cells
+		i += size
+	}
+	out.WriteRune('…')
+	if strings.Contains(s, "\x1b[") {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
 }
 func wrapText(s string,width int) string {
 	if width<8 { width=8 }
