@@ -838,77 +838,115 @@ func (a *App) rackPanel(l uiLayout) string {
 	var left, right strings.Builder
 	start := min(a.rackLeftScroll, max(0, len(game.ModuleCatalog)-visibleLeft))
 	end := min(len(game.ModuleCatalog), start+visibleLeft)
+	leftInner := leftWidth-2
+	nameWidth := max(1, leftInner-2)
 	for i := start; i < end; i++ {
 		spec := game.ModuleCatalog[i]
 		m := a.state.Module(spec.ID)
-		status, revision := "NEW", ""
+		symbol := " "
 		if m != nil && m.Level > 0 {
-			revision = fmt.Sprintf(" Rev %02d", m.Level)
-			switch { case m.Booting: status = "BOOTING"; case m.Installed: status = "IN RACK"; default: status = "REMOVED" }
+			if m.Installed { symbol = "X" } else { symbol = ">" }
 		}
-		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
-		marker := " "
-		if i == a.selectedUpgrade { marker = "›" }
-		nameWidth := max(8, leftWidth-4-lipgloss.Width(revision)-lipgloss.Width(status)-2)
-		name := truncate(marker+" "+spec.Name, nameWidth)
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
-		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
-		left.WriteString(padCells(style.Render(name)+labelStyle.Render(revision), labelStyle.Render(status), leftWidth-2)+"\n")
+		name := spec.Name
+		if a.rackCatalogSelected && i == a.selectedUpgrade {
+			name = "["+name+"]"
+		}
+		name = padCells(name, "", nameWidth)
+		row := name+" "+symbol
+		// The colored row is a constant width, with high-contrast black text.
+		rowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color(spec.Color)).Width(leftInner)
+		left.WriteString(rowStyle.Render(row)+"\n")
 	}
 	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed), a.rackRightScroll, visibleRight))+"\n")
 	startR := min(a.rackRightScroll, max(0, len(installed)-visibleRight))
 	endR := min(len(installed), startR+visibleRight)
+	paneInner := rightWidth-2
+	cardWidth := max(20, min(paneInner-2, 54))
+	cardInner := cardWidth-2
+	cardPad := max(0, (paneInner-cardWidth)/2)
 	for i := startR; i < endR; i++ {
 		m := installed[i]
 		name, color := m.ID, teal
-		for _, spec := range game.ModuleCatalog { if spec.ID == m.ID { name = spec.Name; color = lipgloss.Color(spec.Color); break } }
-		if m.ID == "legacy_controller" { name, color = "LEGACY PRINT CONTROLLER", orange }
-		blockWidth := max(20, min(rightWidth-2, 42))
-		inner := blockWidth-2
-		remove := ""
-		if !m.Jammed { remove = "[X]" }
-		top := "┌"+padCells(" "+truncate(name, inner-7), remove, inner)+"┐"
-		revLine := "│"+padCells(fmt.Sprintf(" REV %02d", m.Level), moduleGain(m.ID, m.Level), inner)+"│"
-		card := []string{top, revLine}
-		if m.Booting {
-			card = append(card, "│"+padCells(" "+bootMessage(m), "", inner)+"│")
-			barWidth := max(6, inner-2)
-			done := m.BootTicksTotal-m.BootTicksRemaining
-			filled := min(barWidth, max(0, done*barWidth/max(1, m.BootTicksTotal)))
-			card = append(card, "│"+padCells(" ["+strings.Repeat("█", filled)+strings.Repeat("·", barWidth-filled)+"]", "", inner)+"│")
-		} else if m.ActivatedFlash {
-			card = append(card, "│"+padCells(" ACTIVATED!", "", inner)+"│")
-			card = append(card, "│"+padCells(" ["+strings.Repeat("█", max(6, inner-2))+"]", "", inner)+"│")
-		} else if m.Jammed {
-			card = append(card, "│"+padCells(" JAMMED · SPECIALIST REMOVAL", "", inner)+"│")
-		} else {
-			flicker := "*  *  *  *  *"
-			if a.uiFrame%7 < 3 { flicker = "* *   *  * *" }
-			card = append(card, "│"+padCells(" "+flicker, "", inner)+"│")
+		for _, spec := range game.ModuleCatalog {
+			if spec.ID == m.ID { name = spec.Name; color = lipgloss.Color(spec.Color); break }
 		}
-		card = append(card, "└"+strings.Repeat("─", inner)+"┘")
-		style := lipgloss.NewStyle().Foreground(color)
-		if i == a.selectedRackModule && a.rackFocusRight { style = style.Bold(true) }
-		for row, line := range card {
-			switch {
-			case row == 1: right.WriteString(labelStyle.Render(line)+"\n")
-			case m.ActivatedFlash && row == 2: right.WriteString(okStyle.Render(line)+"\n")
-			case row == len(card)-2 && (m.Booting || m.ActivatedFlash): right.WriteString(okStyle.Render(line)+"\n")
-			default: right.WriteString(style.Render(line)+"\n")
+		if m.ID == "legacy_controller" { name, color = "LEGACY PRINT CONTROLLER", orange }
+		selected := i == a.selectedRackModule && a.rackFocusRight
+		card := rackModuleCard(m, name, color, cardInner, selected, a.rackRemovalArmedModule == m.ID, a.uiFrame)
+		for _, line := range card {
+			paddedLine := strings.Repeat(" ", cardPad)+line+strings.Repeat(" ", max(0,paneInner-cardPad-lipgloss.Width(line)))
+			if m.Jammed {
+				right.WriteString(orangeRackStyle(selected).Render(paddedLine)+"\n")
+			} else if selected {
+				right.WriteString(lipgloss.NewStyle().Bold(true).Render(paddedLine)+"\n")
+			} else {
+				right.WriteString(paddedLine+"\n")
 			}
 		}
-		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
+		if i < endR-1 { right.WriteString("\n") }
 	}
 	emptyWidth := max(16, min(rightWidth-4, 34))-2
-	right.WriteString(labelStyle.Render("┌"+strings.Repeat("─", emptyWidth)+"┐")+"\n")
-	right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY", "", emptyWidth)+"│")+"\n")
-	right.WriteString(labelStyle.Render("└"+strings.Repeat("─", emptyWidth)+"┘")+"\n")
+	emptyCard := []string{
+		"┌"+strings.Repeat("─", emptyWidth)+"┐",
+		"│"+padCells(" EMPTY BAY", "", emptyWidth)+"│",
+		"└"+strings.Repeat("─", emptyWidth)+"┘",
+	}
+	for _, line := range emptyCard { right.WriteString(labelStyle.Render(line)+"\n") }
 	if endR < len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
-	right.WriteString(selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"  "+labelStyle.Render("[U] UPGRADES · [B] BACK"))
-	leftPane := windowPane("AVAILABLE MODULES", left.String(), leftWidth, paneHeight)
+	right.WriteString(selectedStyle.Render("[ENTER] INSTALL / REMOVE SELECTED")+"  "+labelStyle.Render("[U] UPGRADES · [B] BACK"))
+	leftPane := windowPane("MODULES", left.String(), leftWidth, paneHeight)
 	rightPane := windowPane("RACK BUS", right.String(), rightWidth, paneHeight)
 	out.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane))
 	return out.String()
+}
+
+// rackModuleCard returns fully enclosed module faces. Jammed legacy hardware
+// has no revision row and exposes a confirmation-style specialist removal button.
+func rackModuleCard(m game.ModuleState, name string, color lipgloss.Color, inner int, selected, removalArmed bool, frame int64) []string {
+	_ = color // The caller applies the module's color to the complete box.
+	remove := ""
+	if !m.Jammed { remove = "[X]" }
+	top := "┌"+padCells(" "+truncate(name, max(8, inner-7)), remove, inner)+"┐"
+	if m.Jammed {
+		button := "$50 - [REMOVE]"
+		if removalArmed { button = "$50 - [REMOVE]" }
+		return []string{
+			top,
+			"│"+padCells(" JAMMED - SPECIALIST REMOVAL", "", inner)+"│",
+			"│"+padCells("", button, inner)+"│",
+			"└"+strings.Repeat("─", inner)+"┘",
+		}
+	}
+	revLine := "│"+padCells(fmt.Sprintf(" REV %02d", m.Level), moduleGain(m.ID, m.Level), inner)+"│"
+	card := []string{top, revLine}
+	if m.Booting {
+		card = append(card, "│"+padCells(" "+bootMessage(m), "", inner)+"│")
+		barWidth := max(6, inner-2)
+		done := m.BootTicksTotal-m.BootTicksRemaining
+		filled := min(barWidth, max(0, done*barWidth/max(1, m.BootTicksTotal)))
+		card = append(card, "│"+padCells(" ["+strings.Repeat("█", filled)+strings.Repeat("·", barWidth-filled)+"]", "", inner)+"│")
+	} else if m.ActivatedFlash {
+		card = append(card, "│"+padCells(" ACTIVATED!", "", inner)+"│")
+		card = append(card, "│"+padCells(" ["+strings.Repeat("█", max(6, inner-2))+"]", "", inner)+"│")
+	} else {
+		flicker := "*  *  *  *  *"
+		if frame%7 < 3 { flicker = "* *   *  * *" }
+		card = append(card, "│"+padCells(" "+flicker, "", inner)+"│")
+	}
+	card = append(card, "└"+strings.Repeat("─", inner)+"┘")
+	_ = selected
+	return card
+}
+
+func orangeRackStyle(selected bool) lipgloss.Style {
+	style := lipgloss.NewStyle().Foreground(orange)
+	if selected { style = style.Bold(true) }
+	return style
+}
+
+func rackCardHeight(m game.ModuleState) int {
+	if m.Booting || m.ActivatedFlash { return 5 }
+	return 4
 }
 
 func windowPane(title, content string, width, height int) string {
