@@ -11,7 +11,9 @@ A Federal Reserve employee discovers an anomaly in a printing process. The explo
 3. Capacity is a safety threshold, not a hard cutoff. Cash above capacity remains available but increases risk.
 4. MAIN / PRINT OPERATIONS displays the capital panel and printing controls.
 5. UPGRADES purchases and improves printer modules. Each module occupies a logical bay while installed; revision upgrades improve the module rather than creating duplicate copies.
-6. HARDWARE RACK uses two panes: the module catalogue on the left and installed hardware on the right. Both panes are navigable and designed to scroll as the catalogue and rack grow.
+6. HARDWARE RACK uses bordered panes: the module catalogue on the left and installed hardware on the right. Both panes scroll with keyboard or mouse wheel, and the rack shows a scrollbar indicator and an empty bay marker.
+7. Acquiring or reinstalling a module transfers it to the rack immediately, but starts a randomized 6–12 active-second initialization sequence. Effects are disabled while booting; the module displays firmware-status messages, a progress bar, and a brief green `ACTIVATED!` confirmation. Booting pauses when the application is closed.
+8. MAIN displays persistent system UPTIME as `HHH:MM:SS`. It is saved across app exits and is intended to reset only after an actual system restart, not when the game is closed.
 7. A legacy controller begins jammed in the rack. Removing it requires a paid specialist removal, representing the cost of doing the job discreetly and safely.
 8. STORAGE unlocks as capital approaches apartment capacity. Lockboxes add capacity, but clutter reduces the efficiency of additional boxes and adds exposure.
 9. The MESSAGES tab unlocks an IT Operations thread. Structured messages support explicit reply choices, delayed responses, and persistent character reactions.
@@ -43,7 +45,7 @@ A Federal Reserve employee discovers an anomaly in a printing process. The explo
 ## Module progression
 
 - Module revisions improve the installed module's effects.
-- Removing a module disables its effect. Reinstalling a removed module preserves its revision.
+- Removing a module disables its effect. Reinstalling a removed module preserves its revision and requires a fresh initialization sequence.
 - The first automatic injector is deliberately simple and conspicuous. More sophisticated timing variation and obfuscation should be introduced later, once automation itself creates meaningful scrutiny.
 - Inspection events may confiscate installed modules if the player fails to prepare. Warnings and deadlines should be readable and fair.
 - Module suspicion and rack-wide conspicuousness are future extensions; the current prototype establishes the data model and UI.
