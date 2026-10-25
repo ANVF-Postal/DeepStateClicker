@@ -739,7 +739,7 @@ func (a *App) rackPanel(l uiLayout) string {
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
 	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth)
-	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),startRPlaceholder(a),max(2,(l.Height-14)/6)))+"\n")
+	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),a.rackRightScroll,max(2,(l.Height-14)/6)))+"\n")
 	startR:=a.rackRightScroll
 	endR:=min(len(installed),startR+visibleRight)
 	for i:=startR;i<endR;i++ {
