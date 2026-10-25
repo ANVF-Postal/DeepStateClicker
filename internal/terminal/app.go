@@ -1191,6 +1191,44 @@ func windowPane(title, content string, width, height int) string {
 	return out.String()
 }
 
+
+func windowPaneWithVerticalScrollbar(title string, content []string, width, height, total, start, visible int) string {
+	width = max(18, width)
+	height = max(3, height)
+	inner := width-2
+	contentWidth := inner-1
+	topLabel := "┌─ "+title+" "
+	top := topLabel+strings.Repeat("─", max(0, width-lipgloss.Width(topLabel)-1))+"┐"
+	contentHeight := height-2
+
+	// The scrollbar rail is one cell inside the right border. Its thumb tracks
+	// bay selection/scroll position vertically, rather than using a horizontal
+	// progress strip in the rack title.
+	thumbHeight := contentHeight
+	thumbStart := 0
+	if total > visible {
+		thumbHeight = max(1, contentHeight*visible/max(1,total))
+		thumbStart = min(max(0,contentHeight-thumbHeight), start*max(1,contentHeight-thumbHeight)/max(1,total-visible))
+	}
+	var out strings.Builder
+	out.WriteString(labelStyle.Render(top)+"\n")
+	for row := 0; row < contentHeight; row++ {
+		line := ""
+		if row < len(content) { line = content[row] }
+		if lipgloss.Width(line) > contentWidth { line = truncate(line, contentWidth) }
+		line += strings.Repeat(" ", max(0,contentWidth-lipgloss.Width(line)))
+		scrollChar := "░"
+		scrollStyle := labelStyle
+		if row >= thumbStart && row < thumbStart+thumbHeight {
+			scrollChar = "█"
+			scrollStyle = okStyle
+		}
+		out.WriteString(labelStyle.Render("│")+line+scrollStyle.Render(scrollChar)+labelStyle.Render("│")+"\n")
+	}
+	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
+	return out.String()
+}
+
 func paneWidths(l uiLayout) (int, int) {
 	available := max(40, l.Width-4)
 	left := max(24, min(38, available/3))
