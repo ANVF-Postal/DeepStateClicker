@@ -585,8 +585,7 @@ func (a *App) gameView() string {
 	case game.TabStorage: panel = a.storagePanel(l)
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
-	panelLines := max(4, l.TickerY-l.ContentY-2)
-	if a.message != "" { panelLines-- }
+	panelLines := panelLineLimit(l, a.message != "")
 	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
 	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message, max(12, l.Width-4)))+"\n") }
@@ -709,8 +708,8 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n")
 	}
 	right.WriteString(labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
-	leftPane := windowPane("MODULE CATALOG", left.String(), leftWidth)
-	rightPane := windowPane("MODULE DETAILS", right.String(), rightWidth)
+	leftPane := windowPane("MODULE CATALOG", left.String(), leftWidth, panelLineLimit(l, a.message != ""))
+	rightPane := windowPane("MODULE DETAILS", right.String(), rightWidth, panelLineLimit(l, a.message != ""))
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(leftPane),
 		lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightPane))
@@ -740,7 +739,7 @@ func (a *App) rackPanel(l uiLayout) string {
 		left.WriteString(style.Render(name)+"\n")
 		left.WriteString(labelStyle.Render("  "+status)+"\n")
 	}
-	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth)
+	leftPane:=windowPane("AVAILABLE MODULES",left.String(),leftWidth,max(4,panelLineLimit(l,a.message!="")-2))
 	right.WriteString(titleStyle.Render("INSTALLED RACK")+" "+labelStyle.Render(rackScrollbar(len(installed),a.rackRightScroll,max(1,(l.Height-20)/6)))+"\n")
 	startR:=a.rackRightScroll
 	endR:=min(len(installed),startR+visibleRight)
@@ -799,24 +798,42 @@ func (a *App) rackPanel(l uiLayout) string {
 	right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n")
 	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
 	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK"))
-	rightPane:=windowPane("RACK BUS",right.String(),rightWidth)
+	rightPane:=windowPane("RACK BUS",right.String(),rightWidth,max(4,panelLineLimit(l,a.message!="")-2))
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(leftPane),lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightPane)))
 	return b.String()
 }
 
-func windowPane(title, content string, width int) string {
-	width=max(18,width)
-	inner:=width-2
-	topLabel:="┌─ "+title+" "
-	top:=topLabel+strings.Repeat("─",max(0,width-lipgloss.Width(topLabel)-1))+"┐"
+func windowPane(title, content string, width, height int) string {
+	width = max(18, width)
+	height = max(3, height)
+	inner := width-2
+	topLabel := "┌─ "+title+" "
+	top := topLabel+strings.Repeat("─", max(0, width-lipgloss.Width(topLabel)-1))+"┐"
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	contentHeight := height-2
+	if len(lines) > contentHeight { lines = lines[:contentHeight] }
+	for len(lines) < contentHeight { lines = append(lines, "") }
 	var out strings.Builder
 	out.WriteString(labelStyle.Render(top)+"\n")
-	for _,line:=range strings.Split(strings.TrimSuffix(content,"\n"),"\n") {
-		if lipgloss.Width(line)>inner { line=truncate(ansiSequences.ReplaceAllString(line,""),inner) }
-		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ",max(0,inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
+	for _, line := range lines {
+		if lipgloss.Width(line) > inner { line = truncate(ansiSequences.ReplaceAllString(line, ""), inner) }
+		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
 	}
-	out.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘"))
+	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
 	return out.String()
+}
+
+func paneWidths(l uiLayout) (int, int) {
+	available := max(40, l.Width-4) // gameView adds two columns of padding on each side.
+	left := max(24, min(38, available/3))
+	right := max(18, available-left-1)
+	return left, right
+}
+
+func panelLineLimit(l uiLayout, hasMessage bool) int {
+	n := max(4, l.TickerY-l.ContentY-2)
+	if hasMessage { n-- }
+	return n
 }
 
 func rackScrollbar(total,start,visible int) string {
