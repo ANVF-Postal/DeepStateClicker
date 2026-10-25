@@ -263,7 +263,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			}
 			switch {
 			case strings.Contains(line, "[U] UPGRADES"): a.mainView = "upgrades"; a.selectedUpgrade = 0
-			case strings.Contains(line, "[R] HARDWARE RACK"): a.mainView = "rack"; a.rackFocusRight = false
+			case strings.Contains(line, "[R] HARDWARE RACK") && a.hasPurchasedModule(): a.mainView = "rack"; a.rackFocusRight = false
 			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
 			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
 			case a.mainView == "upgrades" && (strings.Contains(line, "BUY") || strings.Contains(line,"REINSTALL MODULE")): a.activateMainSelection()
@@ -341,7 +341,7 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "t": if a.state.StorageUnlocked { _ = a.state.OpenTab(game.TabStorage); a.message = "" }
 	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.message = "" }
-	case "r": if a.state.CurrentTab == game.TabPrint { a.mainView = "rack"; a.rackFocusRight = false; a.message = "" }
+	case "r": if a.state.CurrentTab == game.TabPrint && a.hasPurchasedModule() { a.mainView = "rack"; a.rackFocusRight = false; a.message = "" } else if a.state.CurrentTab == game.TabPrint { a.message = "Hardware rack unlocks after you acquire your first module." }
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -438,7 +438,7 @@ func (a *App) moveMainSelection(delta int) {
 		if a.rackFocusRight {
 			installed := a.installedModules()
 			a.selectedRackModule = max(0, min(max(0,len(installed)-1), a.selectedRackModule+delta))
-			visible := max(2,min(4,(a.height-16)/6))
+			visible := max(2,(a.height-14)/6)
 			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
@@ -451,8 +451,22 @@ func (a *App) moveMainSelection(delta int) {
 
 func (a *App) installedModules() []game.ModuleState {
 	var result []game.ModuleState
-	for _, m := range a.state.Modules { if m.Installed { result = append(result,m) } }
+	for _, m := range a.state.Modules { if m.Installed && !m.Jammed { result = append(result,m) } }
+	for _, m := range a.state.Modules { if m.Installed && m.Jammed { result = append(result,m) } }
 	return result
+}
+
+func (a *App) hasPurchasedModule() bool {
+	for _, spec := range game.ModuleCatalog { if m:=a.state.Module(spec.ID); m!=nil && m.Level>0 { return true } }
+	return false
+}
+
+func formatUptime(seconds int64) string {
+	if seconds < 0 { seconds = 0 }
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	secs := seconds % 60
+	return fmt.Sprintf("%03d:%02d:%02d", hours, minutes, secs)
 }
 
 func (a *App) activateMainSelection() {
@@ -486,6 +500,24 @@ func (a *App) buySelectedModule(now time.Time) {
 }
 
 func lWidthForRack(width int) int { return max(24,min(38,width/3)) }
+
+func moduleGain(id string, level int) string {
+	switch id {
+	case "window_expansion": return fmt.Sprintf("+%ds EXPLOIT WINDOW", level)
+	case "queue_calibration": return fmt.Sprintf("+%ds QUEUE WINDOW", level)
+	case "auto_injector": return fmt.Sprintf("+%d AUTO INJECTION", level)
+	case "obfuscation": return "NO ACTIVE EFFECT"
+	default: return "SYSTEM HARDWARE"
+	}
+}
+
+func bootMessage(m game.ModuleState) string {
+	elapsed := m.BootTicksTotal-m.BootTicksRemaining
+	messages := []string{"BUS ENUMERATION IN PROGRESS", "FIRMWARE SIGNATURE VERIFIED", "CALIBRATING TIMING BUS", "LOADING CONTROL ROUTINES", "RUNNING INTEGRITY CHECK", "FINALIZING MODULE HANDSHAKE"}
+	if elapsed < 0 { elapsed = 0 }
+	idx := min(len(messages)-1, elapsed*len(messages)/max(1,m.BootTicksTotal))
+	return messages[idx]
+}
 
 func (a *App) gameView() string {
 	l := a.layout()
@@ -584,7 +616,7 @@ func (a *App) printPanel(l uiLayout) string {
 	b.WriteString(titleStyle.Render("MAIN  /  PRINT OPERATIONS")+"   ")
 	if a.state.Status == game.RunFederal || a.state.Status == game.RunSandbox { b.WriteString(okStyle.Render("SYSTEM READY")) } else { b.WriteString(dangerStyle.Render("SYSTEM OFFLINE")) }
 	b.WriteString("\n")
-	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk))+"\n")
+	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %s  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), formatUptime(a.state.UptimeSeconds), a.state.Risk))+"\n")
 	b.WriteString(a.cashPanelView(l.Width)+"\n\n")
 	b.WriteString(titleStyle.Render("PRINT WINDOW")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d", a.state.Batch.Number))+"\n")
 	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY OPEN")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n")
@@ -605,7 +637,8 @@ func (a *App) printPanel(l uiLayout) string {
 	if a.state.Batch.LastOutcome != "" && !strings.Contains(outcome, "queue moved on") && !strings.Contains(outcome, "no instruction was sent") {
 		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
 	}
-	b.WriteString("\n"+selectedStyle.Render("[U] UPGRADES")+"   "+selectedStyle.Render("[R] HARDWARE RACK")+"\n")
+	b.WriteString("\n"+selectedStyle.Render("[U] UPGRADES")+"   ")
+	if a.hasPurchasedModule() { b.WriteString(selectedStyle.Render("[R] HARDWARE RACK")+"\n") } else { b.WriteString(labelStyle.Render("[R] HARDWARE RACK — LOCKED")+"\n") }
 	b.WriteString(labelStyle.Render("The machine is old. The unused bays still accept modules."))
 	return b.String()
 }
@@ -659,8 +692,8 @@ func (a *App) rackPanel(l uiLayout) string {
 	installed := a.installedModules()
 	b.WriteString(labelStyle.Render(fmt.Sprintf("BAYS IN USE: %d  ·  RACK CAPACITY: UNLIMITED",len(installed)))+"\n")
 	leftWidth := max(24,min(38,l.Width/3))
-	visibleLeft := 5
-	visibleRight := max(2,min(4,(l.Height-16)/6))
+	visibleLeft := max(2,(l.Height-14)/3)
+	visibleRight := max(2,(l.Height-14)/6)
 	var left,right strings.Builder
 	left.WriteString(titleStyle.Render("AVAILABLE MODULES")+"\n")
 	start := a.rackLeftScroll
