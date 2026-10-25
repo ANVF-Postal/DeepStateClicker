@@ -249,31 +249,46 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		case game.TabPrint, game.TabStore:
 			if strings.Contains(line, "INJECT") && a.mainView != "rack" && a.mainView != "upgrades" { return a.handleGameKey("x") }
 			if a.mainView == "upgrades" {
-				leftWidth := max(28,min(38,a.layout().Width/3))
-				if x < leftWidth+5 {
-					for row,text := range lines { if strings.Contains(text,"MODULE CATALOG") { idx:=(y-row-1)/2; if idx>=0 && idx<len(game.ModuleCatalog) { a.selectedUpgrade=idx; return nil }; break } }
+				leftWidth, _ := paneWidths(a.layout())
+				if x >= 2 && x < 2+leftWidth {
+					for i, spec := range game.ModuleCatalog {
+						if strings.Contains(line, spec.Name) { a.selectedUpgrade = i; return nil }
+					}
 				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE") || mouseWithin(line,x,"[ENTER / B] REINSTALL") {
 					return a.handleGameKey("b")
 				}
 			}
 			if a.mainView == "rack" {
-				for i,mod := range a.installedModules() {
-					name:=mod.ID; for _,spec:=range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name } }; if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
-					leftPaneWidth:=max(24,min(38,a.layout().Width/3)); rightPaneWidth:=max(28,a.layout().Width-leftPaneWidth-7); blockWidth:=max(20,min(rightPaneWidth-3,44))
-					visibleName:=truncate(name,max(8,blockWidth-9))
-					if mouseWithin(line,x,"[X]") && strings.Contains(line,visibleName) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
+				leftWidth, _ := paneWidths(a.layout())
+				leftPaneHit := x >= 2 && x < 2+leftWidth
+				if !leftPaneHit && mouseWithin(line,x,"[X]") {
+					for i, mod := range a.installedModules() {
+						name := mod.ID
+						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
+						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
+						if strings.Contains(line, truncate(name, max(8, min(40, len([]rune(name)))) ) && !mod.Jammed {
+							a.selectedRackModule = i
+							a.rackFocusRight = true
+							a.activateMainSelection()
+							return nil
+						}
+					}
 				}
-			}
-			
-			if a.mainView == "rack" {
-				for i, spec := range game.ModuleCatalog {
-					if strings.Contains(line,spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
-				}
-				for i, mod := range a.installedModules() {
-					name := mod.ID
-					for _, spec := range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name; break } }
-					if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
-					if strings.Contains(line,name) || (mod.Jammed && strings.Contains(line,"JAMMED")) { a.selectedRackModule=i; a.rackFocusRight=true; return nil }
+				if leftPaneHit {
+					for i, spec := range game.ModuleCatalog {
+						if strings.Contains(line, spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
+					}
+				} else {
+					for i, mod := range a.installedModules() {
+						name := mod.ID
+						for _, spec := range game.ModuleCatalog { if spec.ID == mod.ID { name = spec.Name; break } }
+						if mod.ID == "legacy_controller" { name = "LEGACY PRINT CONTROLLER" }
+						if strings.Contains(line, name) || (mod.Jammed && strings.Contains(line, "JAMMED")) {
+							a.selectedRackModule = i
+							a.rackFocusRight = true
+							return nil
+						}
+					}
 				}
 			}
 			switch {
