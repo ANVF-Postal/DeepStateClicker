@@ -464,8 +464,15 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 			if err := a.state.ReplyToSelected(0, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "2":
-		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" {
+			a.buySelectedModule(now)
+		} else if (a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint) && a.hasPurchasedModule() {
 			a.mainView = "rack"
+			a.rackFocusRight = false
+			a.rackCatalogSelected = false
+			a.rackRemovalArmedModule = ""
+		} else if a.state.CurrentTab == game.TabPrint {
+			a.message = "Hardware rack unlocks after you acquire your first module."
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(1, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
