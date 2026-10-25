@@ -177,7 +177,9 @@ func (a *App) loadGame() {
 }
 
 func (a *App) layout() uiLayout {
-	w, h := a.width, a.height
+	// Keep the interface away from the terminal's bottom row and rightmost
+	// column. Some terminals wrap or scroll when a frame touches either edge.
+	w, h := a.width-1, a.height-1
 	if w < 24 { w = 24 }
 	if h < 12 { h = 12 }
 	sideBySide := w >= 100
@@ -411,11 +413,45 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 func (a *App) autosave() { if a.screen == screenGame { if err := save.Write(savePath, a.state); err != nil { a.message = "Autosave failed: "+err.Error() } } }
 
 func (a *App) View() string {
+	var view string
 	switch a.screen {
-	case screenMenu: return a.menuView()
-	case screenIntro: return a.introView()
-	default: return a.gameView()
+	case screenMenu:
+		view = a.menuView()
+	case screenIntro:
+		view = a.introView()
+	default:
+		view = a.gameView()
 	}
+	// Bubble Tea redraws a full-screen view as a grid. Keep that grid's
+	// dimensions stable and overwrite blank cells so changing panels cannot
+	// leave stale borders or cause the terminal to scroll.
+	return stableTerminalFrame(view, max(1, a.width-1), max(1, a.height-1))
+}
+
+func stableTerminalFrame(view string, width, height int) string {
+	width = max(1, width)
+	height = max(1, height)
+
+	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		if lipgloss.Width(line) > width {
+			// All normal screens are laid out to fit. This is only a last
+			// safety net for unusually narrow terminals, where retaining
+			// partial ANSI styling is less important than preventing wraps.
+			line = truncate(ansiSequences.ReplaceAllString(line, ""), width)
+		}
+		if cells := lipgloss.Width(line); cells < width {
+			line += strings.Repeat(" ", width-cells)
+		}
+		lines[i] = line
+	}
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Centralized color vocabulary. The current terminal theme stays restrained;
