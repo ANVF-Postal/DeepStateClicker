@@ -663,44 +663,41 @@ func (a *App) printPanel(l uiLayout) string {
 }
 
 func (a *App) upgradesPanel(l uiLayout) string {
-	leftWidth := max(28, min(38, l.Width/3))
-	rightWidth := max(28, l.Width-leftWidth-7)
+	leftWidth, rightWidth := paneWidths(l)
+	paneHeight := panelLineLimit(l, a.message != "")
 	var left, right strings.Builder
 	for i, spec := range game.ModuleCatalog {
 		m := a.state.Module(spec.ID)
-		status := "AVAILABLE"
+		status, revision := "AVAILABLE", ""
 		if m != nil && m.Level > 0 {
-			status = fmt.Sprintf("REV %02d", m.Level)
-			if m.Installed { status += " INSTALLED" } else { status += " STORED" }
+			revision = fmt.Sprintf(" Rev %02d", m.Level)
+			switch { case m.Booting: status = "BOOTING"; case m.Installed: status = "IN RACK"; default: status = "REMOVED" }
 		}
 		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
-		marker := map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade]
-		nameWidth := leftWidth-4
-		if m != nil && m.Level > 0 { nameWidth = leftWidth-10 }
-		name := truncate(fmt.Sprintf("%s %s",marker,spec.Name),nameWidth)
+		marker := " "
+		if i == a.selectedUpgrade { marker = "›" }
+		nameWidth := max(8, leftWidth-4-lipgloss.Width(revision)-lipgloss.Width(status)-2)
+		name := truncate(marker+" "+spec.Name, nameWidth)
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
 		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
-		left.WriteString(style.Render(name))
-		if m != nil && m.Level > 0 { left.WriteString(labelStyle.Render(" Rev "+fmt.Sprintf("%02d",m.Level))) }
-		left.WriteString("\n")
-		left.WriteString(labelStyle.Render("  "+status)+"\n")
+		left.WriteString(padCells(style.Render(name)+labelStyle.Render(revision), labelStyle.Render(status), leftWidth-2)+"\n")
 	}
-	spec := game.ModuleCatalog[max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade))]
+	idx := max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade))
+	spec := game.ModuleCatalog[idx]
 	m := a.state.Module(spec.ID)
 	level := 0
 	if m != nil { level = m.Level }
 	right.WriteString(titleStyle.Render(spec.Name)+"\n")
-	right.WriteString(wrapText(spec.Description,max(18,rightWidth-5))+"\n")
-	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d",level,spec.MaxLevel))+"\n")
-	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5",spec.Suspicion))+"\n")
-	if spec.ID=="obfuscation" && a.state.Risk<25 {
+	right.WriteString(wrapText(spec.Description, max(18, rightWidth-4))+"\n")
+	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d", level, spec.MaxLevel))+"\n")
+	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5", spec.Suspicion))+"\n")
+	if spec.ID == "obfuscation" && a.state.Risk < 25 {
 		right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
-	} else if m!=nil && m.Level>0 && m.Installed {
+	} else if m != nil && m.Level > 0 && m.Installed {
 		cost := spec.Cost*int64(level+1)
 		if level >= spec.MaxLevel { right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
-		} else { right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n") }
-		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n")
-	} else if m!=nil && m.Level>0 {
+		} else { right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n"); right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n") }
+	} else if m != nil && m.Level > 0 {
 		right.WriteString(labelStyle.Render("MODULE REMOVED FROM RACK")+"\n")
 		right.WriteString(selectedStyle.Render("[ENTER / B] REINSTALL")+"\n")
 	} else {
@@ -708,11 +705,10 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n")
 	}
 	right.WriteString(labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
-	leftPane := windowPane("MODULE CATALOG", left.String(), leftWidth, panelLineLimit(l, a.message != ""))
-	rightPane := windowPane("MODULE DETAILS", right.String(), rightWidth, panelLineLimit(l, a.message != ""))
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(leftPane),
-		lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightPane))
+		windowPane("MODULE CATALOG", left.String(), leftWidth, paneHeight),
+		" ",
+		windowPane("MODULE DETAILS", right.String(), rightWidth, paneHeight))
 }
 
 func (a *App) rackPanel(l uiLayout) string {
