@@ -237,6 +237,7 @@ func TestUptimePersistsSeparatelyFromSimulationTick(t *testing.T) {
 	for i:=0;i<5;i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
 	if s.UptimeSeconds != 5 || s.Tick != 5 { t.Fatalf("unexpected initial uptime/tick: %d/%d",s.UptimeSeconds,s.Tick) }
 	s.ResetSystemUptime(now.Add(6*time.Second))
+	s.Normalize() // A deliberate reset must remain zero when a save is normalized after loading.
 	if s.UptimeSeconds != 0 { t.Fatalf("system reset should clear uptime, got %d",s.UptimeSeconds) }
 	if s.Tick != 5 { t.Fatalf("system uptime reset must not rewind simulation timers, got tick %d",s.Tick) }
 	s.Advance(now.Add(7*time.Second))
