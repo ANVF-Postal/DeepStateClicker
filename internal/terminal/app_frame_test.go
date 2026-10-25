@@ -314,11 +314,17 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 	y, line = rackLine(t, app, "$50 - [REMOVE]")
 	x = cellOffset(line, "[REMOVE]")
 	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
-	if m := app.state.Module("legacy_controller"); m == nil || m.Installed {
-		t.Fatalf("second click should confirm removal through Update: %#v (line=%q)", m, line)
+	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed || !m.Jammed {
+		t.Fatalf("confirming removal should reveal the next jammed controller at the bottom: %#v (line=%q)", m, line)
 	}
 	if app.state.CashOnHand != 5_000 {
-		t.Fatalf("specialist removal should cost $50, cash=%d", app.state.CashOnHand)
+		t.Fatalf("first specialist removal should cost $50, cash=%d", app.state.CashOnHand)
+	}
+	if app.state.RackSlotsUnlocked != 1 || app.state.RackJammedRemovals != 1 {
+		t.Fatalf("first removal should unlock exactly one bay and advance the price tier: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
+	}
+	if _, line := rackLine(t, app, "$100 - [REMOVE]"); !strings.Contains(line, "LEGACY PRINT CONTROLLER 02") {
+		t.Fatalf("next blocker should be numbered and cost $100: %q", line)
 	}
 	if app.rackRemovalArmedModule != "" {
 		t.Fatalf("confirmation should clear armed removal, got %q", app.rackRemovalArmedModule)
@@ -349,7 +355,7 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 			if tc.module.ID == "legacy_controller" {
 				name = "LEGACY PRINT CONTROLLER"
 			}
-			lines := rackModuleCard(tc.module, name, inner, false, 4, 7)
+			lines := rackModuleCard(tc.module, name, inner, 5_000, false, 4, 7)
 			if len(lines) != rackBayHeight {
 				t.Fatalf("module card has %d rows; want %d", len(lines), rackBayHeight)
 			}
@@ -380,37 +386,40 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 	}
 }
 
-func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
+func TestRemovingLegacyControllerUnlocksOneBayAndEscalatesTheNextFee(t *testing.T) {
 	app := New(game.NewState(time.Unix(1, 0)))
 	before := app.rackBays()
-	if len(before) != 1 {
-		t.Fatalf("blocked legacy rack should initially show only the occupied controller bay, got %d", len(before))
-	}
-	if before[0] == nil || !before[0].Jammed {
-		t.Fatalf("legacy controller must be the only initial bay and must be occupied: %#v", before)
+	if len(before) != 1 || before[0] == nil || !before[0].Jammed {
+		t.Fatalf("the initial rack should contain only the bottom jammed controller: %#v", before)
 	}
 
-	app.state.CashOnHand = 10_000
+	app.state.CashOnHand = 50_000
 	if err := app.state.RemoveJammedLegacyModule(time.Unix(2, 0)); err != nil {
-		t.Fatalf("remove legacy controller: %v", err)
+		t.Fatalf("remove first jammed controller: %v", err)
 	}
-	after := app.rackBays()
-	if len(after) != 3 {
-		t.Fatalf("removing legacy controller should unlock three usable bays, got %d", len(after))
+	first := app.rackBays()
+	if len(first) != 2 || first[0] != nil || first[1] == nil || !first[1].Jammed {
+		t.Fatalf("first removal should produce one empty bay above the next jammed controller: %#v", first)
 	}
-	if after[0] != nil {
-		t.Fatalf("the legacy controller's former position should be available as an empty bay: %#v", after)
+	if app.state.RackSlotsUnlocked != 1 || app.state.RackJammedRemovals != 1 {
+		t.Fatalf("first removal should unlock exactly one slot: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
 	}
-	empty := 0
-	for _, bay := range after {
-		if bay == nil {
-			empty++
-		} else if bay.Jammed {
-			t.Fatalf("removed controller should no longer occupy a rack slot: %#v", after)
-		}
+	if app.state.CashOnHand != 45_000 || app.state.JammedLegacyRemovalCost() != 10_000 {
+		t.Fatalf("first removal should cost $50 and make the next fee $100: cash=%d nextFee=%d", app.state.CashOnHand, app.state.JammedLegacyRemovalCost())
 	}
-	if empty != 3 {
-		t.Fatalf("expected three newly usable empty bays, got %d", empty)
+
+	if err := app.state.RemoveJammedLegacyModule(time.Unix(3, 0)); err != nil {
+		t.Fatalf("remove second jammed controller: %v", err)
+	}
+	second := app.rackBays()
+	if len(second) != 3 || second[0] != nil || second[1] != nil || second[2] == nil || !second[2].Jammed {
+		t.Fatalf("second removal should produce two empty bays above the next jammed controller: %#v", second)
+	}
+	if app.state.RackSlotsUnlocked != 2 || app.state.RackJammedRemovals != 2 {
+		t.Fatalf("second removal should unlock one additional slot: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
+	}
+	if app.state.CashOnHand != 35_000 || app.state.JammedLegacyRemovalCost() != 15_000 {
+		t.Fatalf("second removal should cost $100 and make the next fee $150: cash=%d nextFee=%d", app.state.CashOnHand, app.state.JammedLegacyRemovalCost())
 	}
 }
 
@@ -559,7 +568,9 @@ func TestFullRackRejectsInstallAndFlashesReadyModuleRed(t *testing.T) {
 	app.screen = screenGame
 	app.state.CurrentTab = game.TabPrint
 	app.state.CashOnHand = 100_000
-	if err := app.state.RemoveJammedLegacyModule(now); err != nil { t.Fatal(err) }
+	for i := 0; i < 3; i++ {
+		if err := app.state.RemoveJammedLegacyModule(now); err != nil { t.Fatalf("unlock rack bay %d: %v", i+1, err) }
+	}
 
 	for _, id := range []string{"window_expansion", "queue_calibration", "auto_injector"} {
 		if err := app.state.PurchaseModule(id, now); err != nil { t.Fatalf("purchase %s: %v", id, err) }
