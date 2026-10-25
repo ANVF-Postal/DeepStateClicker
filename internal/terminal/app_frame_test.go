@@ -375,6 +375,15 @@ func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
 	if len(before) != 3 {
 		t.Fatalf("legacy rack should initially show 3 bays, got %d", len(before))
 	}
+	if before[len(before)-1] == nil || !before[len(before)-1].Jammed {
+		t.Fatalf("legacy controller must be the final occupied bay: %#v", before)
+	}
+	for i := 0; i < len(before)-1; i++ {
+		if before[i] != nil && before[i].Jammed {
+			t.Fatalf("jammed controller must never have a bay below it: %#v", before)
+		}
+	}
+
 	app.state.CashOnHand = 10_000
 	if err := app.state.RemoveJammedLegacyModule(time.Unix(2, 0)); err != nil {
 		t.Fatalf("remove legacy controller: %v", err)
@@ -383,10 +392,15 @@ func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
 	if len(after) != 5 {
 		t.Fatalf("removing legacy controller should reveal 2 additional bays, got %d", len(after))
 	}
+	if after[len(before)-1] != nil {
+		t.Fatalf("the legacy controller's old bay should remain empty: %#v", after)
+	}
 	empty := 0
 	for _, bay := range after {
 		if bay == nil {
 			empty++
+		} else if bay.Jammed {
+			t.Fatalf("removed controller should no longer occupy a rack slot: %#v", after)
 		}
 	}
 	if empty < 4 {
