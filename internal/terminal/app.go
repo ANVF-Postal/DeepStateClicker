@@ -267,7 +267,6 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
 			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
 			case a.mainView == "upgrades" && (strings.Contains(line, "BUY") || strings.Contains(line,"REINSTALL MODULE")): a.activateMainSelection()
-			case a.state.CurrentTab == game.TabStorage && strings.Contains(line,"BUY LOCKBOX"): return a.handleGameKey("1")
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
@@ -439,7 +438,8 @@ func (a *App) moveMainSelection(delta int) {
 		if a.rackFocusRight {
 			installed := a.installedModules()
 			a.selectedRackModule = max(0, min(max(0,len(installed)-1), a.selectedRackModule+delta))
-			if a.selectedRackModule >= a.rackRightScroll+4 { a.rackRightScroll = a.selectedRackModule-3 }
+			visible := max(2,min(4,(a.height-16)/6))
+			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
 			a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
