@@ -276,7 +276,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				}
 			}
 			if a.mainView == "rack" {
-				leftWidth, rightWidth := paneWidths(a.layout())
+				leftWidth, _ := paneWidths(a.layout())
 				leftPaneHit := x >= 2 && x < 2+leftWidth
 				if leftPaneHit {
 					paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
