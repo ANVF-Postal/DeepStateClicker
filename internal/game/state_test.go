@@ -217,7 +217,7 @@ func TestModuleEffectsWaitForBootAndReinstallReboots(t *testing.T) {
 	s.CashOnHand = 100_000
 	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
 	m := s.Module("window_expansion")
-	if m == nil || !m.Installed || !m.Booting || m.BootTicksRemaining < 4 || m.BootTicksRemaining > 10 {
+	if m == nil || !m.Installed || !m.Booting || m.BootTicksRemaining < 6 || m.BootTicksRemaining > 12 {
 		t.Fatalf("module should transfer to rack and boot for a bounded duration: %#v", m)
 	}
 	if got := moduleLevel(&s, "window_expansion"); got != 0 { t.Fatalf("booting module must not grant effects, got level %d", got) }
