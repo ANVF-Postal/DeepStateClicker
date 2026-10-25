@@ -240,6 +240,14 @@ func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
 		m = &s.Modules[len(s.Modules)-1]
 	}
 	if m.Jammed { return errors.New("this module is jammed and must be removed before it can be serviced") }
+	if m.Level > 0 && !m.Installed {
+		m.Installed = true
+		if id == "queue_calibration" { s.Upgrades.WindowCalibration = true }
+		if id == "auto_injector" { s.Upgrades.PrintAutomation = true }
+		s.addEvent("module_installed",spec.Name+" reinstalled at revision "+fmt.Sprint(m.Level)+".",now)
+		s.UpdatedAt = now
+		return nil
+	}
 	if m.Level >= spec.MaxLevel { return ErrUpgradeOwned }
 	cost := spec.Cost * int64(m.Level+1)
 	if s.CashOnHand < cost { return ErrInsufficient }
