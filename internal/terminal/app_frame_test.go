@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"deepstateclicker/internal/game"
 )
@@ -245,6 +246,18 @@ func (a *App) paneLeftSymbolX() int {
 	return leftWidth
 }
 
+func rackLineWithContext(t *testing.T, app *App, target, context string) (int, string) {
+	t.Helper()
+	lines := plainViewLines(app.View())
+	for y, line := range lines {
+		if strings.Contains(line, target) && strings.Contains(line, context) {
+			return y, line
+		}
+	}
+	t.Fatalf("could not find target %q with context %q in rack view", target, context)
+	return -1, ""
+}
+
 func TestRackRightModuleXRemovesModule(t *testing.T) {
 	app := New(game.NewState(time.Unix(1, 0)))
 	app.width, app.height = 100, 31
@@ -252,21 +265,17 @@ func TestRackRightModuleXRemovesModule(t *testing.T) {
 	app.state.CurrentTab = game.TabPrint
 	app.state.CashOnHand = 100_000
 	now := time.Unix(1, 0)
-	if err := app.state.PurchaseModule("window_expansion", now); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.state.InstallModule("window_expansion", now); err != nil {
-		t.Fatal(err)
-	}
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := app.state.InstallModule("window_expansion", now); err != nil { t.Fatal(err) }
 	app.mainView = "rack"
 	app.rackFocusRight = true
 	app.selectRackModule("window_expansion")
 
-	y, line := rackLine(t, app, "[X]")
+	y, line := rackLineWithContext(t, app, "WINDOW EXPANSION", "[X]")
 	x := strings.Index(line, "[X]")
-	app.handleMouse(x, y)
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("window_expansion"); m.Installed {
-		t.Fatalf("clicking the large rack module X should remove it: %#v", m)
+		t.Fatalf("clicking the actual module X should remove it: %#v (x=%d y=%d line=%q)", m, x, y, line)
 	}
 }
 
@@ -277,25 +286,31 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 	app.state.CurrentTab = game.TabPrint
 	app.state.CashOnHand = 10_000
 	app.mainView = "rack"
+	// The jammed module is the bottom bay. Scroll the rack viewport to it.
+	app.rackRightScroll = len(app.rackBays())-visibleRackBays(max(4,panelLineLimit(app.layout(),false)-2))
+	app.rackRightScroll = max(0,app.rackRightScroll)
 
-	y, line := rackLine(t, app, "[REMOVE]")
+	y, line := rackLineWithContext(t, app, "$50 - [REMOVE]", "JAMMED - SPECIALIST REMOVAL")
 	x := strings.Index(line, "[REMOVE]")
-	app.handleMouse(x, y)
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed {
-		t.Fatalf("first click must not remove legacy hardware: %#v", m)
+		t.Fatalf("first click must only arm the actual specialist button: %#v (line=%q)", m, line)
 	}
 	if app.rackRemovalArmedModule != "legacy_controller" {
 		t.Fatalf("first click should arm specialist removal, got %q", app.rackRemovalArmedModule)
 	}
 
-	y, line = rackLine(t, app, "[REMOVE]")
+	y, line = rackLineWithContext(t, app, "$50 - [REMOVE]", "JAMMED - SPECIALIST REMOVAL")
 	x = strings.Index(line, "[REMOVE]")
-	app.handleMouse(x, y)
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
 	if m := app.state.Module("legacy_controller"); m == nil || m.Installed {
-		t.Fatalf("second click should confirm legacy removal: %#v", m)
+		t.Fatalf("second click should confirm removal through Update: %#v (line=%q)", m, line)
 	}
 	if app.state.CashOnHand != 5_000 {
 		t.Fatalf("specialist removal should cost $50, cash=%d", app.state.CashOnHand)
+	}
+	if app.rackRemovalArmedModule != "" {
+		t.Fatalf("confirmation should clear armed removal, got %q", app.rackRemovalArmedModule)
 	}
 }
 
