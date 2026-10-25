@@ -207,6 +207,9 @@ func TestRackCatalogueSelectThenClickInstallsAndSymbolRemoves(t *testing.T) {
 	app.screen = screenGame
 	app.state.CurrentTab = game.TabPrint
 	app.state.CashOnHand = 100_000
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.state.PurchaseModule("window_expansion", now); err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +275,7 @@ func TestRackRightModuleXRemovesModule(t *testing.T) {
 	app.state.CurrentTab = game.TabPrint
 	app.state.CashOnHand = 100_000
 	now := time.Unix(1, 0)
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil { t.Fatal(err) }
 	if err := app.state.PurchaseModule("window_expansion", now); err != nil { t.Fatal(err) }
 	if err := app.state.InstallModule("window_expansion", now); err != nil { t.Fatal(err) }
 	app.mainView = "rack"
