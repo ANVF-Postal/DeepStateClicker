@@ -232,8 +232,8 @@ func (s *State) QueueExploit(now time.Time) error {
 }
 
 func startModuleBoot(s *State, m *ModuleState) {
-	// 4–10 active seconds; Advance pauses entirely while the application is closed.
-	duration := 4 + s.randomInt(7)
+	// 6–12 active seconds; each firmware phase lasts a randomized one or two ticks.
+	duration := 6 + s.randomInt(7)
 	m.Booting = true
 	m.ActivatedFlash = false
 	m.BootTicksTotal = duration
