@@ -48,6 +48,9 @@ type App struct {
 	selectedUpgrade int
 	selectedRackModule int
 	rackFocusRight bool
+	rackCatalogSelected bool
+	rackRemovalArmedModule string
+	upgradeBuyArmed bool
 	rackLeftScroll int
 	rackRightScroll int
 }
@@ -740,7 +743,19 @@ func (a *App) printPanel(l uiLayout) string {
 		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
 	}
 	b.WriteString("\n"+selectedStyle.Render("[U] UPGRADES")+"   ")
-	if a.hasPurchasedModule() { b.WriteString(selectedStyle.Render("[R] HARDWARE RACK")+"\n") } else { b.WriteString(labelStyle.Render("[R] HARDWARE RACK — LOCKED")+"\n") }
+	if a.hasPurchasedModule() {
+		rackLabel := "[R] HARDWARE RACK"
+		switch {
+		case a.hasReadyModules() && a.uiFrame%6 < 3:
+			b.WriteString(okStyle.Render(rackLabel)+"\n")
+		case a.hasReadyModules():
+			b.WriteString(labelStyle.Render(rackLabel)+"\n")
+		default:
+			b.WriteString(selectedStyle.Render(rackLabel)+"\n")
+		}
+	} else {
+		b.WriteString(labelStyle.Render("[R] HARDWARE RACK — LOCKED")+"\n")
+	}
 	b.WriteString(labelStyle.Render("The machine is old. The unused bays still accept modules."))
 	return b.String()
 }
@@ -767,23 +782,42 @@ func (a *App) upgradesPanel(l uiLayout) string {
 	spec := game.ModuleCatalog[idx]
 	m := a.state.Module(spec.ID)
 	level := 0
-	if m != nil { level = m.Level }
+	installed := false
+	if m != nil {
+		level = m.Level
+		installed = m.Installed
+	}
 	right.WriteString(titleStyle.Render(spec.Name)+"\n")
 	right.WriteString(wrapText(spec.Description, max(18, rightWidth-4))+"\n")
 	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d", level, spec.MaxLevel))+"\n")
 	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5", spec.Suspicion))+"\n")
 	if spec.ID == "obfuscation" && a.state.Risk < 25 {
 		right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
-	} else if m != nil && m.Level > 0 && m.Installed {
-		cost := spec.Cost*int64(level+1)
-		if level >= spec.MaxLevel { right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
-		} else { right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n"); right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n") }
-	} else if m != nil && m.Level > 0 {
-		right.WriteString(labelStyle.Render("MODULE REMOVED FROM RACK")+"\n")
-		right.WriteString(selectedStyle.Render("[ENTER / B] REINSTALL")+"\n")
+	} else if level >= spec.MaxLevel {
+		if installed {
+			right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
+		} else {
+			right.WriteString(okStyle.Render("MAXIMUM REVISION OWNED")+"\n")
+			right.WriteString(labelStyle.Render("INSTALL IT FROM HARDWARE RACK")+"\n")
+		}
 	} else {
-		right.WriteString(labelStyle.Render("ACQUISITION COST: $"+money(spec.Cost))+"\n")
-		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n")
+		if level == 0 {
+			right.WriteString(labelStyle.Render("ACQUISITION COST: $"+money(spec.Cost))+"\n")
+		} else {
+			right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(spec.Cost*int64(level+1)))+"\n")
+			if !installed {
+				right.WriteString(okStyle.Render("READY FOR INSTALLATION IN HARDWARE RACK")+"\n")
+			} else {
+				right.WriteString(labelStyle.Render("PURCHASING THIS REVISION REQUIRES REINSTALLATION")+"\n")
+			}
+		}
+		buyLabel := "[ENTER / B] BUY / UPGRADE"
+		if a.upgradeBuyArmed {
+			buyLabel = "[CONFIRM] CLICK BUY / UPGRADE AGAIN"
+			right.WriteString(okStyle.Render(buyLabel)+"\n")
+		} else {
+			right.WriteString(selectedStyle.Render(buyLabel)+"\n")
+		}
 	}
 	right.WriteString(labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
 	return lipgloss.JoinHorizontal(lipgloss.Top,
