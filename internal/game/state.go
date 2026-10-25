@@ -192,8 +192,8 @@ func (s *State) Normalize() {
 	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
 	if len(s.Modules) == 0 { s.Modules = NewModuleState() }
 	for i := range s.Modules {
-		if s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
-		if s.Modules[i].ID == "auto_injector" && s.Modules[i].Level > 0 { s.Upgrades.PrintAutomation = true }
+		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
+		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "auto_injector" && s.Modules[i].Level > 0 { s.Upgrades.PrintAutomation = true }
 	}
 	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { s.Modules = append(s.Modules, ModuleState{ID:"queue_calibration", Level:1, Installed:true}) }
 	if s.Upgrades.PrintAutomation && moduleLevel(s, "auto_injector") == 0 { s.Modules = append(s.Modules, ModuleState{ID:"auto_injector", Level:1, Installed:true}) }
