@@ -341,13 +341,15 @@ func (s *State) Advance(now time.Time) {
 	s.Batch.WindowOpen = false
 	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
 	if level := moduleLevel(s, "window_expansion"); level > 0 { windowEnd += level }
-	if level := moduleLevel(s, "queue_calibration"); level > 0 { windowEnd++ }
+	if level := moduleLevel(s, "queue_calibration"); level > 0 { windowEnd += level }
 	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { windowEnd++ }
 	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
 		s.Batch.WindowOpen = true
-		if (moduleLevel(s, "auto_injector") > 0 || s.Upgrades.PrintAutomation) && s.Batch.QueuedDollars == 0 {
-			s.Batch.QueuedDollars = 1
-			s.Batch.LastOutcome = "The calibrated exploit queued an instruction automatically."
+		autoLevel := moduleLevel(s, "auto_injector")
+		if autoLevel == 0 && s.Upgrades.PrintAutomation { autoLevel = 1 }
+		if autoLevel > 0 && s.Batch.QueuedDollars == 0 {
+			s.Batch.QueuedDollars = autoLevel
+			s.Batch.LastOutcome = fmt.Sprintf("The automatic injector queued %d instruction(s).",autoLevel)
 		}
 	}
 	if s.Batch.Progress == windowEnd+1 && s.Batch.QueuedDollars == 0 && !s.Batch.WindowMissed {
