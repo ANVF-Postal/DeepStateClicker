@@ -813,6 +813,54 @@ func (a *App) rackPanel(l uiLayout) string {
 	return out.String()
 }
 
+func windowPane(title, content string, width, height int) string {
+	width = max(18, width)
+	height = max(3, height)
+	inner := width-2
+	topLabel := "┌─ "+title+" "
+	top := topLabel+strings.Repeat("─", max(0, width-lipgloss.Width(topLabel)-1))+"┐"
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	contentHeight := height-2
+	if len(lines) > contentHeight { lines = lines[:contentHeight] }
+	for len(lines) < contentHeight { lines = append(lines, "") }
+	var out strings.Builder
+	out.WriteString(labelStyle.Render(top)+"\n")
+	for _, line := range lines {
+		if lipgloss.Width(line) > inner { line = truncate(ansiSequences.ReplaceAllString(line, ""), inner) }
+		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
+	}
+	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
+	return out.String()
+}
+
+func paneWidths(l uiLayout) (int, int) {
+	available := max(40, l.Width-4)
+	left := max(24, min(38, available/3))
+	right := max(18, available-left-1)
+	return left, right
+}
+
+func panelLineLimit(l uiLayout, hasMessage bool) int {
+	n := max(4, l.TickerY-l.ContentY-2)
+	if hasMessage { n-- }
+	return n
+}
+
+func rackScrollbar(total, start, visible int) string {
+	const height = 6
+	if total <= visible { return "[══════]" }
+	thumb := max(1, height*visible/total)
+	pos := min(height-thumb, max(0, start*height/max(1, total-visible)))
+	return "["+strings.Repeat("░", pos)+strings.Repeat("█", thumb)+strings.Repeat("░", height-pos-thumb)+"]"
+}
+
+func padCells(left, right string, width int) string {
+	left = truncate(left, max(0, width-lipgloss.Width(right)))
+	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
+	if lipgloss.Width(left)+lipgloss.Width(right) >= width { gap = 0 }
+	return left+strings.Repeat(" ", gap)+right+strings.Repeat(" ", max(0, width-lipgloss.Width(left)-lipgloss.Width(right)-gap))
+}
+
 func (a *App) storePanel(l uiLayout) string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("STORAGE & MACHINE UPGRADES")+"\n\n")
