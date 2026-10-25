@@ -135,3 +135,166 @@ func TestUppercaseRackShortcutAndMainRackClick(t *testing.T) {
 	}
 	t.Fatal("main view did not render the hardware rack label")
 }
+
+
+func rackLine(t *testing.T, app *App, contains string) (int, string) {
+	t.Helper()
+	lines := plainViewLines(app.View())
+	for y, line := range lines {
+		if strings.Contains(line, contains) {
+			return y, line
+		}
+	}
+	t.Fatalf("could not find %q in rack view", contains)
+	return -1, ""
+}
+
+func TestModulePurchaseWaitsInUpgradesUntilRackInstall(t *testing.T) {
+	now := time.Unix(1, 0)
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	app.mainView = "upgrades"
+	app.selectedUpgrade = 0
+
+	app.buySelectedModule(now)
+	m := app.state.Module("window_expansion")
+	if m == nil || m.Level != 1 || m.Installed || m.Booting {
+		t.Fatalf("purchase should be owned but not installed or booting: %#v", m)
+	}
+	if app.mainView != "upgrades" {
+		t.Fatalf("purchase changed screen to %q; want upgrades", app.mainView)
+	}
+	if !app.hasReadyModules() {
+		t.Fatal("purchased, uninstalled module should trigger rack-ready state")
+	}
+}
+
+func TestUpgradeBuyButtonRequiresSecondClick(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	app.mainView = "upgrades"
+	app.selectedUpgrade = 0
+
+	y, line := rackLine(t, app, "[ENTER / B] BUY / UPGRADE")
+	x := strings.Index(line, "[ENTER / B] BUY / UPGRADE")
+	app.handleMouse(x, y)
+	if app.state.Module("window_expansion") != nil {
+		t.Fatal("first click should only arm the purchase")
+	}
+	y, line = rackLine(t, app, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
+	x = strings.Index(line, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
+	app.handleMouse(x, y)
+	m := app.state.Module("window_expansion")
+	if m == nil || m.Level != 1 || m.Installed {
+		t.Fatalf("confirmed purchase should be ready but uninstalled: %#v", m)
+	}
+	if app.mainView != "upgrades" {
+		t.Fatalf("confirmed purchase changed screen to %q; want upgrades", app.mainView)
+	}
+}
+
+func TestRackCatalogueSelectThenClickInstallsAndSymbolRemoves(t *testing.T) {
+	now := time.Unix(1, 0)
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil {
+		t.Fatal(err)
+	}
+	app.mainView = "rack"
+	app.rackCatalogSelected = false
+
+	headerY, _ := rackLine(t, app, "┌─ MODULES")
+	y := headerY + 1
+	_, line := rackLine(t, app, "WINDOW EXPANSION")
+	nameX := strings.Index(line, "WINDOW EXPANSION")
+	app.handleMouse(nameX, y)
+	m := app.state.Module("window_expansion")
+	if !app.rackCatalogSelected || m.Installed {
+		t.Fatalf("first row click should select without installing: selected=%v module=%#v", app.rackCatalogSelected, m)
+	}
+	if !strings.Contains(plainViewLines(app.View())[y], "[WINDOW EXPANSION]") {
+		t.Fatal("selected module name should be enclosed in square brackets")
+	}
+
+	// Clicking the selected row a second time installs the module.
+	app.handleMouse(nameX, y)
+	if !m.Installed || !m.Booting {
+		t.Fatalf("second row click should install and start boot: %#v", m)
+	}
+
+	// The X at the end of the left row is an explicit one-click remove action.
+	app.rackFocusRight = false
+	app.rackCatalogSelected = false
+	app.handleMouse(app.paneLeftSymbolX(), y)
+	if m.Installed {
+		t.Fatalf("catalogue X shortcut should remove immediately: %#v", m)
+	}
+}
+
+func (a *App) paneLeftSymbolX() int {
+	leftWidth, _ := paneWidths(a.layout())
+	return leftWidth
+}
+
+func TestRackRightModuleXRemovesModule(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	now := time.Unix(1, 0)
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.state.InstallModule("window_expansion", now); err != nil {
+		t.Fatal(err)
+	}
+	app.mainView = "rack"
+	app.rackFocusRight = true
+	app.selectRackModule("window_expansion")
+
+	y, line := rackLine(t, app, "[X]")
+	x := strings.Index(line, "[X]")
+	app.handleMouse(x, y)
+	if m := app.state.Module("window_expansion"); m.Installed {
+		t.Fatalf("clicking the large rack module X should remove it: %#v", m)
+	}
+}
+
+func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 10_000
+	app.mainView = "rack"
+
+	y, line := rackLine(t, app, "[REMOVE]")
+	x := strings.Index(line, "[REMOVE]")
+	app.handleMouse(x, y)
+	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed {
+		t.Fatalf("first click must not remove legacy hardware: %#v", m)
+	}
+	if app.rackRemovalArmedModule != "legacy_controller" {
+		t.Fatalf("first click should arm specialist removal, got %q", app.rackRemovalArmedModule)
+	}
+
+	y, line = rackLine(t, app, "[REMOVE]")
+	x = strings.Index(line, "[REMOVE]")
+	app.handleMouse(x, y)
+	if m := app.state.Module("legacy_controller"); m == nil || m.Installed {
+		t.Fatalf("second click should confirm legacy removal: %#v", m)
+	}
+	if app.state.CashOnHand != 5_000 {
+		t.Fatalf("specialist removal should cost $50, cash=%d", app.state.CashOnHand)
+	}
+}
