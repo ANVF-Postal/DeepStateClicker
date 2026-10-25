@@ -350,10 +350,12 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 		}
 	case "i":
 		if err := a.state.IgnoreSelectedMessage(now); err != nil { a.message = err.Error() } else { a.message = "You leave the message unanswered." }
-	case "b", "esc": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
+	case "b":
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else { _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = "" }
+	case "esc": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "v":
 		if err := save.Write(savePath, a.state); err != nil { a.message = "Save failed: "+err.Error() } else { a.message = "Saved to "+savePath }
-	case "h", "?": a.message = "X/P inject  •  MAIN: 1–3 upgrades  •  M messages  •  1–3 reply  •  I ignore  •  V save  •  Q quit"
+	case "h", "?": a.message = "X/P inject  •  U upgrades  •  R rack  •  S main  •  T storage  •  M messages  •  1–3 reply  •  V save  •  Q quit"
 	case "q": a.autosave(); return tea.Quit
 	}
 	return nil
@@ -537,7 +539,7 @@ func (a *App) gameView() string {
 	b.WriteString(panel+"\n")
 	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message, max(12, l.Width-4)))+"\n") }
 	for strings.Count(b.String(), "\n") < l.TickerY-1 { b.WriteString("\n") }
-	b.WriteString(labelStyle.Render("X/P inject  1–3 upgrades/replies  M messages  I ignore  V save  H help  Q quit"))
+	b.WriteString(labelStyle.Render("X/P inject  U upgrades  R rack  S main  T storage  M messages  1–3 reply  V save  H help  Q quit"))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
 }
 
