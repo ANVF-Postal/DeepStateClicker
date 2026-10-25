@@ -251,7 +251,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if a.mainView == "upgrades" {
 				leftWidth := max(28,min(38,a.layout().Width/3))
 				if x < leftWidth+5 {
-					for i,spec := range game.ModuleCatalog { if strings.Contains(line,spec.Name) { a.selectedUpgrade=i; return nil } }
+					for row,text := range lines { if strings.Contains(text,"MODULE CATALOG") { idx:=(y-row-1)/2; if idx>=0 && idx<len(game.ModuleCatalog) { a.selectedUpgrade=idx; return nil }; break } }
 				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE") || mouseWithin(line,x,"[ENTER / B] REINSTALL") {
 					return a.handleGameKey("b")
 				}
@@ -259,7 +259,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if a.mainView == "rack" {
 				for i,mod := range a.installedModules() {
 					name:=mod.ID; for _,spec:=range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name } }; if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
-					if mouseWithin(line,x,"[X]") && strings.Contains(line,name) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
+					blockWidth:=max(20,min(max(28,min(38,a.layout().Width/3)) /* pane estimate */,44))
+					visibleName:=truncate(name,max(8,blockWidth-9))
+					if mouseWithin(line,x,"[X]") && strings.Contains(line,visibleName) && !mod.Jammed { a.selectedRackModule=i; a.rackFocusRight=true; a.activateMainSelection(); return nil }
 				}
 			}
 			
@@ -675,7 +677,7 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		if spec.ID == "obfuscation" && a.state.Risk < 25 { status = "LOCKED" }
 		marker := map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade]
 		nameWidth := leftWidth-4
-		if m != nil && m.Level > 0 { nameWidth = leftWidth-13 }
+		if m != nil && m.Level > 0 { nameWidth = leftWidth-10 }
 		name := truncate(fmt.Sprintf("%s %s",marker,spec.Name),nameWidth)
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
 		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
