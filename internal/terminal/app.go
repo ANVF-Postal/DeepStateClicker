@@ -255,9 +255,12 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			if a.mainView == "upgrades" {
 				leftWidth, _ := paneWidths(a.layout())
 				if x >= 2 && x < 2+leftWidth {
-					paneLine := visiblePaneText(line, 2, leftWidth)
-					for i, spec := range game.ModuleCatalog {
-						if strings.Contains(paneLine, spec.Name) { a.selectedUpgrade = i; return nil }
+					for row, paneTitle := range lines {
+						if strings.Contains(paneTitle, "MODULE CATALOG") {
+							idx := y-row-1
+							if idx >= 0 && idx < len(game.ModuleCatalog) { a.selectedUpgrade = idx }
+							return nil
+						}
 					}
 				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE") || mouseWithin(line,x,"[ENTER / B] REINSTALL") {
 					return a.handleGameKey("b")
@@ -281,9 +284,18 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 					}
 				}
 				if leftPaneHit {
-					paneLine := visiblePaneText(line, 2, leftWidth)
-					for i, spec := range game.ModuleCatalog {
-						if strings.Contains(paneLine, spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
+					paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+					visibleLeft := max(1, paneHeight-2)
+					start := min(a.rackLeftScroll, max(0, len(game.ModuleCatalog)-visibleLeft))
+					for row, paneTitle := range lines {
+						if strings.Contains(paneTitle, "AVAILABLE MODULES") {
+							idx := start+y-row-1
+							if idx >= start && idx < min(len(game.ModuleCatalog), start+visibleLeft) {
+								a.selectedUpgrade = idx
+								a.rackFocusRight = false
+							}
+							return nil
+						}
 					}
 				} else {
 					for i, mod := range a.installedModules() {
