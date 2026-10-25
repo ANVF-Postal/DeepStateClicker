@@ -39,6 +39,7 @@ type App struct {
 	menu int
 	message string
 	uiFrame int64
+	diskFrame int64
 	newsHeadline string
 	newsStartedAt time.Time
 	injectFlashUntil time.Time
@@ -93,8 +94,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					visibleLeft := max(1, paneHeight-2)
 					a.rackLeftScroll = max(0, min(max(0, len(game.ModuleCatalog)-visibleLeft), a.rackLeftScroll+delta))
 				} else {
-					visible := max(1, (paneHeight-9)/5)
-					a.rackRightScroll = max(0, min(max(0, len(a.installedModules())-visible), a.rackRightScroll+delta))
+					visible := visibleRackBays(paneHeight)
+					a.rackRightScroll = max(0, min(max(0, len(a.rackBays())-visible), a.rackRightScroll+delta))
 				}
 			} else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.selectedUpgrade=max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade+delta)) }
 		}
@@ -108,6 +109,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uiPulseMsg:
 		if a.screen == screenGame {
 			a.uiFrame++
+			a.diskFrame++
 			return a, uiPulse()
 		}
 	case tea.KeyMsg:
