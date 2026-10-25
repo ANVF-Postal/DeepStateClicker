@@ -51,6 +51,8 @@ type App struct {
 	rackFocusRight bool
 	rackCatalogSelected bool
 	rackRemovalArmedModule string
+	rackRejectedModule string
+	rackRejectFlashUntil time.Time
 	upgradeBuyArmed bool
 	rackLeftScroll int
 	rackRightScroll int
@@ -92,7 +94,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
 				if msg.X < 2+leftWidth {
 					visibleLeft := max(1, paneHeight-2)
-					a.rackLeftScroll = max(0, min(max(0, len(game.ModuleCatalog)-visibleLeft), a.rackLeftScroll+delta))
+					a.rackLeftScroll = max(0, min(max(0, len(a.rackReadyModules())-visibleLeft), a.rackLeftScroll+delta))
 				} else {
 					visible := visibleRackBays(paneHeight)
 					a.rackRightScroll = max(0, min(max(0, len(a.rackBays())-visible), a.rackRightScroll+delta))
@@ -297,40 +299,24 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				startR := min(max(0,a.rackRightScroll), max(0,len(bays)-visibleRight))
 
 				if leftPaneHit {
+					readySpecs := a.rackReadyModules()
 					visibleLeft := max(1,paneHeight-2)
-					start := min(a.rackLeftScroll, max(0,len(game.ModuleCatalog)-visibleLeft))
+					start := min(max(0,a.rackLeftScroll), max(0,len(readySpecs)-visibleLeft))
 					for row, paneTitle := range lines {
 						if strings.Contains(paneTitle, "MODULES") && strings.Contains(paneTitle, "┌") {
 							idx := start+y-row-1
-							if idx < start || idx >= min(len(game.ModuleCatalog),start+visibleLeft) {
+							if idx < start || idx >= min(len(readySpecs),start+visibleLeft) {
 								return nil
 							}
-							spec := game.ModuleCatalog[idx]
-							// The final cell is a one-click action: X removes and >
-							// inserts. Clicking the name uses select-then-click.
+							spec := readySpecs[idx]
+							// Every item in this pane is owned and ready. The trailing
+							// chevron attempts installation; names use select-then-click.
 							if x == leftWidth {
 								a.selectedUpgrade = idx
 								a.rackCatalogSelected = true
 								a.rackFocusRight = false
 								a.rackRemovalArmedModule = ""
-								m := a.state.Module(spec.ID)
-								if m == nil || m.Level <= 0 {
-									a.message = "Purchase "+spec.Name+" in UPGRADES before installing it."
-								} else if m.Installed {
-									if err := a.state.RemoveModule(spec.ID,time.Now()); err != nil {
-										a.message = err.Error()
-									} else {
-										a.message = spec.Name+" removed from the rack."
-									}
-								} else {
-									if err := a.state.InstallModule(spec.ID,time.Now()); err != nil {
-										a.message = err.Error()
-									} else {
-										a.message = spec.Name+" inserted. Initialization sequence started."
-										a.rackFocusRight = true
-										a.selectRackModule(spec.ID)
-									}
-								}
+								a.installRackModule(spec.ID, time.Now())
 							} else if a.rackCatalogSelected && a.selectedUpgrade == idx {
 								a.toggleSelectedRackCatalogModule(time.Now())
 							} else {
@@ -338,7 +324,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 								a.rackCatalogSelected = true
 								a.rackFocusRight = false
 								a.rackRemovalArmedModule = ""
-								a.message = "Selected "+spec.Name+". Click again to install/remove."
+								a.message = "Selected "+spec.Name+". Click again to install."
 							}
 							return nil
 						}
@@ -426,8 +412,10 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			switch {
 			// MAIN places both controls on the same row. Check the actual
 			// label under the pointer so the R hitbox cannot be swallowed by U.
-			case mouseWithin(line, x, "[R] HARDWARE RACK") && a.hasPurchasedModule():
+			case mouseWithin(line, x, "[R] HARDWARE RACK"):
 				a.mainView = "rack"
+				a.selectedUpgrade = 0
+				a.rackLeftScroll = 0
 				a.rackFocusRight = false
 				a.rackCatalogSelected = false
 				a.rackRemovalArmedModule = ""
@@ -517,13 +505,13 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	case "2":
 		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" {
 			a.buySelectedModule(now)
-		} else if (a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint) && a.hasPurchasedModule() {
+		} else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
 			a.mainView = "rack"
+			a.selectedUpgrade = 0
+			a.rackLeftScroll = 0
 			a.rackFocusRight = false
 			a.rackCatalogSelected = false
 			a.rackRemovalArmedModule = ""
-		} else if a.state.CurrentTab == game.TabPrint {
-			a.message = "Hardware rack unlocks after you acquire your first module."
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(1, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
@@ -536,7 +524,7 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "t": if a.state.StorageUnlocked { _ = a.state.OpenTab(game.TabStorage); a.message = "" }
 	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.upgradeBuyArmed = false; a.message = "" }
-	case "r": if a.state.CurrentTab == game.TabPrint && a.hasPurchasedModule() { a.mainView = "rack"; a.rackFocusRight = false; a.rackCatalogSelected = false; a.rackRemovalArmedModule = ""; a.message = "" } else if a.state.CurrentTab == game.TabPrint { a.message = "Hardware rack unlocks after you acquire your first module." }
+	case "r": if a.state.CurrentTab == game.TabPrint { a.mainView = "rack"; a.selectedUpgrade = 0; a.rackLeftScroll = 0; a.rackFocusRight = false; a.rackCatalogSelected = false; a.rackRemovalArmedModule = ""; a.message = "" }
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -673,9 +661,16 @@ func (a *App) moveMainSelection(delta int) {
 			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
-			a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
+			readySpecs := a.rackReadyModules()
+			if len(readySpecs) == 0 {
+				a.selectedUpgrade = 0
+				a.rackCatalogSelected = false
+				return
+			}
+			a.selectedUpgrade = max(0, min(len(readySpecs)-1, a.selectedUpgrade+delta))
 			a.rackCatalogSelected = true
-			visibleLeft := max(2, (a.height-14)/3)
+			paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+			visibleLeft := max(1, paneHeight-2)
 			if a.selectedUpgrade >= a.rackLeftScroll+visibleLeft { a.rackLeftScroll = a.selectedUpgrade-visibleLeft+1 }
 			if a.selectedUpgrade < a.rackLeftScroll { a.rackLeftScroll = a.selectedUpgrade }
 		}
@@ -707,13 +702,30 @@ func (a *App) hasPurchasedModule() bool {
 	return false
 }
 
-func (a *App) hasReadyModules() bool {
+func (a *App) rackReadyModules() []game.ModuleSpec {
+	var ready []game.ModuleSpec
 	for _, spec := range game.ModuleCatalog {
 		if m := a.state.Module(spec.ID); m != nil && m.Level > 0 && !m.Installed && !m.Jammed {
-			return true
+			ready = append(ready, spec)
 		}
 	}
+	return ready
+}
+
+func (a *App) rackHasFreeBay() bool {
+	for _, bay := range a.rackBays() {
+		if bay == nil { return true }
+	}
 	return false
+}
+
+func (a *App) hasJammedRackModule() bool {
+	m := a.state.Module("legacy_controller")
+	return m != nil && m.Installed && m.Jammed
+}
+
+func (a *App) hasReadyModules() bool {
+	return len(a.rackReadyModules()) > 0
 }
 
 func formatUptime(seconds int64) string {
@@ -765,42 +777,58 @@ func (a *App) activateMainSelection() {
 		a.rackRemovalArmedModule = ""
 		return
 	}
+	readySpecs := a.rackReadyModules()
+	if len(readySpecs) == 0 {
+		a.rackCatalogSelected = false
+		a.message = "No modules are ready for installation. Purchase hardware in UPGRADES."
+		return
+	}
 	if !a.rackCatalogSelected {
-		a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade))
+		a.selectedUpgrade = max(0, min(len(readySpecs)-1, a.selectedUpgrade))
 		a.rackCatalogSelected = true
-		a.message = "Selected "+game.ModuleCatalog[a.selectedUpgrade].Name+". Press ENTER to install/remove."
+		a.message = "Selected "+readySpecs[a.selectedUpgrade].Name+". Press ENTER to install."
 		return
 	}
 	a.toggleSelectedRackCatalogModule(now)
 }
 
 func (a *App) toggleSelectedRackCatalogModule(now time.Time) {
-	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) {
+	readySpecs := a.rackReadyModules()
+	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(readySpecs) {
+		a.rackCatalogSelected = false
 		return
 	}
-	spec := game.ModuleCatalog[a.selectedUpgrade]
-	m := a.state.Module(spec.ID)
-	if m == nil || m.Level <= 0 {
-		a.message = "Purchase "+spec.Name+" in UPGRADES before installing it."
+	a.installRackModule(readySpecs[a.selectedUpgrade].ID, now)
+}
+
+func (a *App) installRackModule(id string, now time.Time) {
+	m := a.state.Module(id)
+	if m == nil || m.Level <= 0 || m.Installed || m.Jammed {
+		a.message = "This module is not ready for installation."
 		return
 	}
-	var err error
-	if m.Installed {
-		err = a.state.RemoveModule(spec.ID, now)
-		if err == nil {
-			a.message = spec.Name+" removed from the rack."
-		}
-	} else {
-		err = a.state.InstallModule(spec.ID, now)
-		if err == nil {
-			a.message = spec.Name+" inserted. Initialization sequence started."
-			a.rackFocusRight = true
-			a.selectRackModule(spec.ID)
-		}
+	if !a.rackHasFreeBay() {
+		a.rackRejectedModule = id
+		a.rackRejectFlashUntil = now.Add(1400*time.Millisecond)
+		a.message = "RACK FULL. Remove a module before installing another."
+		return
 	}
-	if err != nil {
+	if err := a.state.InstallModule(id, now); err != nil {
 		a.message = err.Error()
+		return
 	}
+	a.rackRejectedModule = ""
+	a.rackRejectFlashUntil = time.Time{}
+	name := id
+	for _, spec := range game.ModuleCatalog {
+		if spec.ID == id {
+			name = spec.Name
+			break
+		}
+	}
+	a.message = name+" inserted. Initialization sequence started."
+	a.rackFocusRight = true
+	a.selectRackModule(id)
 }
 
 func (a *App) buySelectedModule(now time.Time) {
@@ -959,20 +987,20 @@ func (a *App) printPanel(l uiLayout) string {
 		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
 	}
 	b.WriteString("\n"+selectedStyle.Render("[U] UPGRADES")+"   ")
-	if a.hasPurchasedModule() {
-		rackLabel := "[R] HARDWARE RACK"
-		switch {
-		case a.hasReadyModules() && a.uiFrame%6 < 3:
-			b.WriteString(okStyle.Render(rackLabel)+"\n")
-		case a.hasReadyModules():
-			b.WriteString(labelStyle.Render(rackLabel)+"\n")
-		default:
-			b.WriteString(selectedStyle.Render(rackLabel)+"\n")
-		}
-	} else {
-		b.WriteString(labelStyle.Render("[R] HARDWARE RACK — LOCKED")+"\n")
+	rackLabel := "[R] HARDWARE RACK"
+	switch {
+	case a.hasReadyModules() && a.uiFrame%6 < 3:
+		b.WriteString(okStyle.Render(rackLabel)+"\n")
+	case a.hasReadyModules():
+		b.WriteString(labelStyle.Render(rackLabel)+"\n")
+	default:
+		b.WriteString(selectedStyle.Render(rackLabel)+"\n")
 	}
-	b.WriteString(labelStyle.Render("The machine is old. The unused bays still accept modules."))
+	if a.hasJammedRackModule() {
+		b.WriteString(dangerStyle.Render("The seized legacy controller blocks every usable bay."))
+	} else {
+		b.WriteString(labelStyle.Render("Three hardware bays available for owned modules."))
+	}
 	return b.String()
 }
 
@@ -1068,32 +1096,19 @@ func (a *App) rackBays() []*game.ModuleState {
 		}
 	}
 
-	capacity := 3
-	if jammed == nil {
-		capacity = 5
-	}
-	// Grow only when the installed module count requires it, and keep at
-	// least one additional bay available for the next insertion.
-	minimum := len(ordinary) + 1
+	// The seized legacy controller blocks every usable bay. Keep any modules
+	// from an older save visible, but do not expose empty slots until it is gone.
+	bays := make([]*game.ModuleState, 0, len(ordinary)+1)
+	bays = append(bays, ordinary...)
 	if jammed != nil {
-		minimum = len(ordinary) + 1 // the legacy controller occupies the final slot
-	}
-	capacity = max(capacity, minimum)
-	if jammed != nil && capacity < len(ordinary)+1 {
-		capacity = len(ordinary)+1
+		return append(bays, jammed)
 	}
 
-	bays := make([]*game.ModuleState, 0, capacity)
-	bays = append(bays, ordinary...)
-	for len(bays) < capacity-1 && jammed != nil {
+	// There are three physical bays once the legacy controller is removed.
+	// Do not silently grow the rack to leave a spare slot: the rack can be full.
+	capacity := max(3, len(ordinary))
+	for len(bays) < capacity {
 		bays = append(bays, nil)
-	}
-	if jammed != nil {
-		bays = append(bays, jammed)
-	} else {
-		for len(bays) < capacity {
-			bays = append(bays, nil)
-		}
 	}
 	return bays
 }
@@ -1113,24 +1128,26 @@ func (a *App) rackPanel(l uiLayout) string {
 	visibleRight := visibleRackBays(paneHeight)
 	var left strings.Builder
 
-	start := min(a.rackLeftScroll, max(0, len(game.ModuleCatalog)-visibleLeft))
-	end := min(len(game.ModuleCatalog), start+visibleLeft)
+	readySpecs := a.rackReadyModules()
+	start := min(max(0, a.rackLeftScroll), max(0, len(readySpecs)-visibleLeft))
+	end := min(len(readySpecs), start+visibleLeft)
 	leftInner := leftWidth-2
 	nameWidth := max(1, leftInner-2)
 	for i := start; i < end; i++ {
-		spec := game.ModuleCatalog[i]
-		m := a.state.Module(spec.ID)
-		symbol := " "
-		if m != nil && m.Level > 0 {
-			if m.Installed { symbol = "X" } else { symbol = ">" }
-		}
+		spec := readySpecs[i]
 		name := spec.Name
 		if a.rackCatalogSelected && i == a.selectedUpgrade {
 			name = "["+name+"]"
 		}
-		row := padCells(name, "", nameWidth)+" "+symbol
+		row := padCells(name, "", nameWidth)+" >"
 		rowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color(spec.Color)).Width(leftInner)
+		if spec.ID == a.rackRejectedModule && time.Now().Before(a.rackRejectFlashUntil) && a.uiFrame%4 < 2 {
+			rowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Background(red).Bold(true).Width(leftInner)
+		}
 		left.WriteString(rowStyle.Render(row)+"\n")
+	}
+	if len(readySpecs) == 0 {
+		left.WriteString(labelStyle.Width(leftInner).Render("NO MODULES READY FOR INSTALLATION")+"\n")
 	}
 
 	startR := min(max(0, a.rackRightScroll), max(0, len(bays)-visibleRight))
