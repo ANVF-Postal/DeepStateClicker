@@ -617,9 +617,10 @@ func (a *App) moveMainSelection(delta int) {
 	if a.mainView == "rack" {
 		a.rackRemovalArmedModule = ""
 		if a.rackFocusRight {
-			installed := a.installedModules()
-			a.selectedRackModule = max(0, min(max(0, len(installed)-1), a.selectedRackModule+delta))
-			visible := max(1, (a.height-20)/6)
+			bays := a.rackBays()
+			a.selectedRackModule = max(0, min(max(0, len(bays)-1), a.selectedRackModule+delta))
+			paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+			visible := visibleRackBays(paneHeight)
 			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
 			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
 		} else {
@@ -640,7 +641,12 @@ func (a *App) installedModules() []game.ModuleState {
 }
 
 func (a *App) selectRackModule(id string) {
-	for i,m := range a.installedModules() { if m.ID==id { a.selectedRackModule=i; return } }
+	for i, m := range a.rackBays() {
+		if m != nil && m.ID == id {
+			a.selectedRackModule = i
+			return
+		}
+	}
 }
 
 func (a *App) hasPurchasedModule() bool {
@@ -679,18 +685,30 @@ func (a *App) activateMainSelection() {
 		return
 	}
 	if a.rackFocusRight {
-		installed := a.installedModules()
-		if a.selectedRackModule < 0 || a.selectedRackModule >= len(installed) {
+		bays := a.rackBays()
+		if a.selectedRackModule < 0 || a.selectedRackModule >= len(bays) {
 			return
 		}
-		m := installed[a.selectedRackModule]
-		var err error
-		if m.Jammed {
-			err = a.state.RemoveJammedLegacyModule(now)
-		} else {
-			err = a.state.RemoveModule(m.ID, now)
+		m := bays[a.selectedRackModule]
+		if m == nil {
+			a.message = "This bay is empty. Select a purchased module from the left pane."
+			return
 		}
-		if err != nil {
+		if m.Jammed {
+			if a.rackRemovalArmedModule != m.ID {
+				a.rackRemovalArmedModule = m.ID
+				a.message = "Select [REMOVE] again to confirm specialist removal ($50.00)."
+				return
+			}
+			if err := a.state.RemoveJammedLegacyModule(now); err != nil {
+				a.message = err.Error()
+			} else {
+				a.message = "Specialist removed the legacy print controller."
+			}
+			a.rackRemovalArmedModule = ""
+			return
+		}
+		if err := a.state.RemoveModule(m.ID, now); err != nil {
 			a.message = err.Error()
 		} else {
 			a.message = "Module removed from rack."
