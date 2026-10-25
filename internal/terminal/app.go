@@ -83,12 +83,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delta := 1
 			if msg.Button == tea.MouseButtonWheelUp { delta = -1 }
 			if a.mouseOnTabRow(msg.Y) { a.cycleTab(delta) } else if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
-				leftWidth:=max(24,min(38,a.layout().Width/3))
-				if msg.X < leftWidth+4 { visibleLeft:=max(1,paneHeight-2)
-					a.rackLeftScroll=max(0,min(max(0,len(game.ModuleCatalog)-visibleLeft),a.rackLeftScroll+delta)) } else {
-					paneHeight:=max(4,panelLineLimit(a.layout(),a.message!="")-2)
-					visible:=max(1,(paneHeight-9)/5)
-					a.rackRightScroll=max(0,min(max(0,len(a.installedModules())-visible),a.rackRightScroll+delta))
+				leftWidth, _ := paneWidths(a.layout())
+				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+				if msg.X < 2+leftWidth {
+					visibleLeft := max(1, paneHeight-2)
+					a.rackLeftScroll = max(0, min(max(0, len(game.ModuleCatalog)-visibleLeft), a.rackLeftScroll+delta))
+				} else {
+					visible := max(1, (paneHeight-9)/5)
+					a.rackRightScroll = max(0, min(max(0, len(a.installedModules())-visible), a.rackRightScroll+delta))
 				}
 			} else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.selectedUpgrade=max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade+delta)) }
 		}
