@@ -221,17 +221,20 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		}
 	case screenGame:
 		// The tab strip is identified by its rendered labels, not a fixed row.
-		if strings.Contains(line, "[MAIN]") || strings.Contains(line, "[MESSAGES") {
+		if strings.Contains(line, "[MAIN]") || strings.Contains(line, "[STORAGE]") || strings.Contains(line, "[MESSAGES") {
 			arrowAt := strings.LastIndex(line, ">")
 			if arrowAt >= 0 && x >= arrowAt {
 				a.cycleTab(1)
 				return nil
 			}
 			messagesAt := strings.Index(line, "MESSAGES")
+			storageAt := strings.Index(line, "STORAGE")
 			if messagesAt >= 0 && x >= messagesAt {
 				_ = a.state.OpenTab(game.TabMessages)
 				if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, time.Now()) }
-			} else { _ = a.state.OpenTab(game.TabPrint) }
+			} else if storageAt >= 0 && x >= storageAt {
+				_ = a.state.OpenTab(game.TabStorage)
+			} else { _ = a.state.OpenTab(game.TabPrint); a.mainView = "print" }
 			a.message = ""
 			return nil
 		}
@@ -315,7 +318,7 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 			} else { a.message = err.Error() }
 		} else { a.injectHeldRed = false; a.message = "" }
 	case "1":
-		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+		if a.state.CurrentTab == game.TabStorage { if err := a.state.BuyLockbox(now); err != nil { a.message = err.Error() } else { a.message = "Lockbox added. Apartment capacity increased." } } else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
 			a.mainView = "upgrades"; a.selectedUpgrade = 0
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(0, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
@@ -333,6 +336,7 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 			if err := a.state.ReplyToSelected(2, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
+	case "t": if a.state.StorageUnlocked { _ = a.state.OpenTab(game.TabStorage); a.message = "" }
 	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.message = "" }
 	case "r": if a.state.CurrentTab == game.TabPrint { a.mainView = "rack"; a.rackFocusRight = false; a.message = "" }
 	case "m", "e":
@@ -483,12 +487,14 @@ func (a *App) gameView() string {
 	b.WriteString(a.newsStripView(max(12, l.Width-4))+"\n")
 	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
 	tabs := []game.Tab{game.TabPrint}
+	if a.state.StorageUnlocked { tabs = append(tabs, game.TabStorage) }
 	if a.state.EmailUnlocked { tabs = append(tabs, game.TabMessages) }
 	var labels []string
 	unread := unreadCount(a.state.Messages)
 	urgent := a.state.ITSuspicion >= 4 || (a.state.PendingReplyTicks > 0 && a.state.PendingReplyTicks <= 2)
 	for _, tab := range tabs {
 		label := "MAIN"
+		if tab == game.TabStorage { label = "STORAGE" }
 		if tab == game.TabMessages { label = "MESSAGES"; if unread > 0 { label += fmt.Sprintf(" !%d", unread) } }
 		rendered := "["+label+"]"
 		if tab == a.state.CurrentTab { labels = append(labels, selectedStyle.Render(rendered))
@@ -500,6 +506,7 @@ func (a *App) gameView() string {
 	tabLine := strings.Join(labels, "   ")
 	if lipgloss.Width(tabLine) > max(12, l.Width-8) {
 		selectedLabel := "[MAIN]"
+		if a.state.CurrentTab == game.TabStorage { selectedLabel = "[STORAGE]" }
 		if a.state.CurrentTab == game.TabMessages {
 			selectedLabel = "[MESSAGES"
 			if unread > 0 { selectedLabel += fmt.Sprintf(" !%d", unread) }
@@ -517,6 +524,7 @@ func (a *App) gameView() string {
 		case "rack": panel = a.rackPanel(l)
 		default: panel = a.printPanel(l)
 		}
+	case game.TabStorage: panel = a.storagePanel(l)
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
 	panelLines := max(4, l.TickerY-l.ContentY-2)
@@ -709,6 +717,30 @@ func (a *App) storePanel(l uiLayout) string {
 	return b.String()
 }
 
+func (a *App) storagePanel(l uiLayout) string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("STORAGE  /  PERSONAL PROPERTY")+"\n")
+	b.WriteString(labelStyle.Render("RESIDENCE: CITY APARTMENT  ·  LIQUID CAPITAL CAPACITY")+"\n\n")
+	b.WriteString(titleStyle.Render("APARTMENT INVENTORY")+"\n")
+	b.WriteString(fmt.Sprintf("  Loose cash capacity     $%s\n",money(game.InitialCashCapacity)))
+	b.WriteString(fmt.Sprintf("  Lockboxes owned          %d\n",a.state.LockboxCount))
+	b.WriteString(fmt.Sprintf("  Total capacity            $%s\n",money(a.state.CashCapacity)))
+	b.WriteString(fmt.Sprintf("  Capital currently held    $%s\n\n",money(a.state.CashOnHand)))
+	if a.state.CashOnHand >= game.LockboxCost {
+		b.WriteString(selectedStyle.Render("[1] BUY LOCKBOX  —  $"+money(game.LockboxCost))+"\n")
+	} else {
+		b.WriteString(labelStyle.Render("[1] BUY LOCKBOX  —  $"+money(game.LockboxCost)+" (INSUFFICIENT CAPITAL)")+"\n")
+	}
+	nextCapacity := game.LockboxCapacity
+	if a.state.LockboxCount >= 3 { nextCapacity = 350_000 }
+	b.WriteString(labelStyle.Render("  Capacity increase: +$"+money(nextCapacity))+"\n")
+	if a.state.LockboxCount >= 3 { b.WriteString(dangerStyle.Render("  CLUTTER: additional boxes attract attention and waste space.")+"\n") }
+	b.WriteString("\n"+labelStyle.Render("Cash above capacity remains yours, but increases exposure."))
+	b.WriteString("\n"+labelStyle.Render("Larger containers and manual transfers will follow in a later storage pass."))
+	b.WriteString("\n\n"+labelStyle.Render("[M] MAIN  ·  [1] BUY LOCKBOX"))
+	return b.String()
+}
+
 func (a *App) messagesPanel(l uiLayout) string {
 	if len(a.state.Messages) == 0 {
 		return titleStyle.Render("MESSAGES")+"   "+labelStyle.Render("INTERNAL MAIL")+"\n\n"+labelStyle.Render("No messages.")
@@ -846,7 +878,7 @@ func (a *App) newsStripView(width int) string {
 
 func (a *App) mouseOnTabRow(y int) bool {
 	lines := plainViewLines(a.View())
-	return y >= 0 && y < len(lines) && (strings.Contains(lines[y], "[MAIN]") || strings.Contains(lines[y], "[MESSAGES"))
+	return y >= 0 && y < len(lines) && (strings.Contains(lines[y], "[MAIN]") || strings.Contains(lines[y], "[STORAGE]") || strings.Contains(lines[y], "[MESSAGES"))
 }
 
 func (a *App) isInjectAt(x, y int) bool {
@@ -858,6 +890,7 @@ func (a *App) isInjectAt(x, y int) bool {
 
 func (a *App) cycleTab(delta int) {
 	tabs := []game.Tab{game.TabPrint}
+	if a.state.StorageUnlocked { tabs = append(tabs, game.TabStorage) }
 	if a.state.EmailUnlocked { tabs = append(tabs, game.TabMessages) }
 	current := 0
 	for i, tab := range tabs { if tab == a.state.CurrentTab { current = i; break } }
