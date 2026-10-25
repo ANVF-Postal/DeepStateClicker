@@ -143,6 +143,8 @@ type State struct {
 	Batch BatchState `json:"batch"`
 	Upgrades UpgradeState `json:"upgrades"`
 	Modules []ModuleState `json:"modules,omitempty"`
+	RackSlotsUnlocked int `json:"rack_slots_unlocked,omitempty"`
+	RackJammedRemovals int `json:"rack_jammed_removals,omitempty"`
 	NewsIndex int `json:"news_index"`
 	Events []Event `json:"events"`
 	CreatedAt time.Time `json:"created_at"`
@@ -202,6 +204,19 @@ func (s *State) Normalize() {
 		s.UptimeInitialized = true
 	}
 	if len(s.Modules) == 0 { s.Modules = NewModuleState() }
+	if s.RackSlotsUnlocked < 0 { s.RackSlotsUnlocked = 0 }
+	if s.RackJammedRemovals < 0 { s.RackJammedRemovals = 0 }
+	// Older prototype saves allowed the first controller to be removed for
+	// $50 and granted three slots. Convert such saves to the new progression:
+	// one slot unlocked and a second, more expensive obstruction waiting below.
+	if s.RackSlotsUnlocked == 0 && s.RackJammedRemovals == 0 {
+		if legacy := s.Module("legacy_controller"); legacy != nil && legacy.Level > 0 && !legacy.Installed && !legacy.Jammed {
+			s.RackSlotsUnlocked = 1
+			s.RackJammedRemovals = 1
+			legacy.Installed = true
+			legacy.Jammed = true
+		}
+	}
 	for i := range s.Modules {
 		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
 		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "auto_injector" && s.Modules[i].Level > 0 { s.Upgrades.PrintAutomation = true }
@@ -369,15 +384,27 @@ func (s *State) RemoveModule(id string, now time.Time) error {
 	return nil
 }
 
+// JammedLegacyRemovalCost returns the next specialist fee in cents. Each
+// obstruction costs $50 more than the one before it.
+func (s *State) JammedLegacyRemovalCost() int64 {
+	removals := max(0, s.RackJammedRemovals)
+	return int64(removals+1) * 5_000
+}
+
 func (s *State) RemoveJammedLegacyModule(now time.Time) error {
 	m := s.Module("legacy_controller")
-	if m == nil || !m.Installed { return errors.New("no legacy module is installed") }
-	const removalCost int64 = 5000
+	if m == nil || !m.Installed || !m.Jammed { return errors.New("no jammed legacy module is installed") }
+	removalCost := s.JammedLegacyRemovalCost()
 	if s.CashOnHand < removalCost { return ErrInsufficient }
 	s.CashOnHand -= removalCost
-	m.Installed = false
-	m.Jammed = false
-	s.addEvent("module_removed", "A specialist carefully removes the seized legacy controller without damaging the printer.", now)
+	s.RackSlotsUnlocked++
+	s.RackJammedRemovals++
+
+	// Clearing one seized controller exposes one usable bay, but another
+	// obstruction remains at the end of the rack and costs more to clear.
+	m.Installed = true
+	m.Jammed = true
+	s.addEvent("module_removed", fmt.Sprintf("A specialist clears one seized legacy controller for $%s, unlocking one rack bay. Another obstruction remains.", moneyString(removalCost)), now)
 	s.UpdatedAt = now
 	return nil
 }
