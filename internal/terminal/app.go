@@ -278,49 +278,67 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				}
 			}
 			if a.mainView == "rack" {
-				leftWidth, _ := paneWidths(a.layout())
+				if mouseWithin(line, x, "[U] UPGRADES") {
+					a.mainView = "upgrades"
+					a.selectedUpgrade = max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade))
+					a.upgradeBuyArmed = false
+					return nil
+				}
+				if mouseWithin(line, x, "[B] BACK") {
+					a.mainView = "print"
+					a.message = ""
+					return nil
+				}
+				leftWidth, rightWidth := paneWidths(a.layout())
 				leftPaneHit := x >= 2 && x < 2+leftWidth
+				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+				visibleRight := visibleRackBays(paneHeight)
+				bays := a.rackBays()
+				startR := min(max(0,a.rackRightScroll), max(0,len(bays)-visibleRight))
+
 				if leftPaneHit {
-					paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
-					visibleLeft := max(1, paneHeight-2)
-					start := min(a.rackLeftScroll, max(0, len(game.ModuleCatalog)-visibleLeft))
+					visibleLeft := max(1,paneHeight-2)
+					start := min(a.rackLeftScroll, max(0,len(game.ModuleCatalog)-visibleLeft))
 					for row, paneTitle := range lines {
 						if strings.Contains(paneTitle, "MODULES") && strings.Contains(paneTitle, "┌") {
 							idx := start+y-row-1
-							if idx >= start && idx < min(len(game.ModuleCatalog), start+visibleLeft) {
-								if x == leftWidth {
-									a.rackRemovalArmedModule = ""
-									a.selectedUpgrade = idx
-									a.rackCatalogSelected = true
-									a.rackFocusRight = false
-									spec := game.ModuleCatalog[idx]
-									m := a.state.Module(spec.ID)
-									if m != nil && m.Level > 0 && m.Installed {
-										if err := a.state.RemoveModule(spec.ID, time.Now()); err != nil {
-											a.message = err.Error()
-										} else {
-											a.message = spec.Name+" removed from the rack."
-										}
-									} else if m != nil && m.Level > 0 && !m.Installed {
-										if err := a.state.InstallModule(spec.ID, time.Now()); err != nil {
-											a.message = err.Error()
-										} else {
-											a.message = spec.Name+" inserted. Initialization sequence started."
-											a.rackFocusRight = true
-											a.selectRackModule(spec.ID)
-										}
-									} else if idx >= 0 {
-										a.message = "Purchase "+spec.Name+" in UPGRADES before installing it."
+							if idx < start || idx >= min(len(game.ModuleCatalog),start+visibleLeft) {
+								return nil
+							}
+							spec := game.ModuleCatalog[idx]
+							// The final cell is a one-click action: X removes and >
+							// inserts. Clicking the name uses select-then-click.
+							if x == leftWidth {
+								a.selectedUpgrade = idx
+								a.rackCatalogSelected = true
+								a.rackFocusRight = false
+								a.rackRemovalArmedModule = ""
+								m := a.state.Module(spec.ID)
+								if m == nil || m.Level <= 0 {
+									a.message = "Purchase "+spec.Name+" in UPGRADES before installing it."
+								} else if m.Installed {
+									if err := a.state.RemoveModule(spec.ID,time.Now()); err != nil {
+										a.message = err.Error()
+									} else {
+										a.message = spec.Name+" removed from the rack."
 									}
-								} else if a.rackCatalogSelected && a.selectedUpgrade == idx {
-									a.toggleSelectedRackCatalogModule(time.Now())
 								} else {
-									a.selectedUpgrade = idx
-									a.rackCatalogSelected = true
-									a.rackFocusRight = false
-									a.rackRemovalArmedModule = ""
-									a.message = "Selected "+game.ModuleCatalog[idx].Name+". Click again to install/remove."
+									if err := a.state.InstallModule(spec.ID,time.Now()); err != nil {
+										a.message = err.Error()
+									} else {
+										a.message = spec.Name+" inserted. Initialization sequence started."
+										a.rackFocusRight = true
+										a.selectRackModule(spec.ID)
+									}
 								}
+							} else if a.rackCatalogSelected && a.selectedUpgrade == idx {
+								a.toggleSelectedRackCatalogModule(time.Now())
+							} else {
+								a.selectedUpgrade = idx
+								a.rackCatalogSelected = true
+								a.rackFocusRight = false
+								a.rackRemovalArmedModule = ""
+								a.message = "Selected "+spec.Name+". Click again to install/remove."
 							}
 							return nil
 						}
@@ -329,49 +347,53 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				}
 
 				rightPaneStart := 3+leftWidth
-				if x >= rightPaneStart {
-					startR := min(a.rackRightScroll, max(0, len(a.installedModules())-max(1,(max(4,panelLineLimit(a.layout(),a.message!="")-2)-9)/5)))
-					installed := a.installedModules()
-					visibleRight := max(1, (max(4,panelLineLimit(a.layout(),a.message!="")-2)-9)/5)
-					endR := min(len(installed), startR+visibleRight)
+				if x >= rightPaneStart && x < rightPaneStart+rightWidth {
 					for row, paneTitle := range lines {
 						if strings.Contains(paneTitle, "INSTALLED RACK") {
-							cardY := row+1
-							for i := startR; i < endR; i++ {
-								mod := installed[i]
-								cardHeight := rackCardHeight(mod)
-								if y >= cardY && y < cardY+cardHeight {
-									a.selectedRackModule = i
-									a.rackFocusRight = true
-									if mod.Jammed && mouseWithin(line, x, "[REMOVE]") {
-										if a.rackRemovalArmedModule == mod.ID {
-											if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
-												a.message = err.Error()
-											} else {
-												a.message = "Specialist removed the legacy print controller."
-											}
-											a.rackRemovalArmedModule = ""
-										} else {
-											a.rackRemovalArmedModule = mod.ID
-											a.message = "Click [REMOVE] again to confirm specialist removal ($50.00)."
-										}
-									} else if !mod.Jammed && mouseWithin(line, x, "[X]") {
-										if err := a.state.RemoveModule(mod.ID, time.Now()); err != nil {
-											a.message = err.Error()
-										} else {
-											a.message = mod.ID+" removed from the rack."
-										}
-										a.rackRemovalArmedModule = ""
+							slotOffset := y-(row+1)
+							if slotOffset < 0 {
+								return nil
+							}
+							visibleIndex := slotOffset/rackBayHeight
+							if visibleIndex < 0 || visibleIndex >= visibleRight {
+								return nil
+							}
+							slotIndex := startR+visibleIndex
+							if slotIndex < 0 || slotIndex >= len(bays) {
+								return nil
+							}
+							mod := bays[slotIndex]
+							if mod == nil {
+								return nil
+							}
+							a.selectedRackModule = slotIndex
+							a.rackFocusRight = true
+							if mod.Jammed && mouseWithin(line,x,"[REMOVE]") {
+								if a.rackRemovalArmedModule == mod.ID {
+									if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
+										a.message = err.Error()
 									} else {
-										a.rackRemovalArmedModule = ""
+										a.message = "Specialist removed the legacy print controller. Additional rack bays are now available."
 									}
-									return nil
+									a.rackRemovalArmedModule = ""
+								} else {
+									a.rackRemovalArmedModule = mod.ID
+									a.message = "Click [REMOVE] again to confirm specialist removal ($50.00)."
 								}
-								cardY += cardHeight+1
+							} else if !mod.Jammed && mouseWithin(line,x,"[X]") {
+								if err := a.state.RemoveModule(mod.ID,time.Now()); err != nil {
+									a.message = err.Error()
+								} else {
+									a.message = mod.ID+" removed from the rack."
+								}
+								a.rackRemovalArmedModule = ""
+							} else {
+								a.rackRemovalArmedModule = ""
 							}
 							return nil
 						}
 					}
+					return nil
 				}
 			}
 			switch {
