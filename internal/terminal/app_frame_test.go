@@ -429,26 +429,26 @@ func TestRemovingLegacyModuleButtonCreatesBlankBayCards(t *testing.T) {
 	app.mainView = "rack"
 
 	lines := plainViewLines(app.View())
-	emptyBayCount := 0
+	_, rightWidth := paneWidths(app.layout())
+	paneInner := rightWidth-2
+	contentWidth := paneInner-1
+	cardWidth := max(20,min(contentWidth,54))
+	emptyTop := "┌"+strings.Repeat("─",cardWidth-2)+"┐"
+	foundEmptyBay := false
 	for y, line := range lines {
-		if strings.Contains(line, "JAMMED - SPECIALIST REMOVAL") {
+		if !strings.Contains(line, emptyTop) || y+rackBayHeight > len(lines) {
 			continue
 		}
-		if strings.Contains(line, "INSTALLED RACK") {
-			// Count the two complete blank-bay enclosures that fit in the initial viewport.
-			for i := y + 1; i+rackBayHeight <= len(lines); i += rackBayHeight {
-				cardText := strings.Join(lines[i:i+rackBayHeight], "\n")
-				if strings.Contains(lines[i], "┌") &&
-					!strings.Contains(cardText, "LEGACY PRINT CONTROLLER") &&
-					!strings.Contains(cardText, "WINDOW EXPANSION") {
-					emptyBayCount++
-				}
-				if emptyBayCount >= 2 { break }
-			}
+		cardText := strings.Join(lines[y:y+rackBayHeight], "\n")
+		if !strings.Contains(cardText, "LEGACY PRINT CONTROLLER") &&
+			!strings.Contains(cardText, "WINDOW EXPANSION") &&
+			!strings.Contains(cardText, "QUEUE CALIBRATION") &&
+			!strings.Contains(cardText, "AUTOMATIC INJECTOR") {
+			foundEmptyBay = true
 			break
 		}
 	}
-	if emptyBayCount == 0 {
+	if !foundEmptyBay {
 		t.Fatal("rack should render at least one empty bay as a full blank enclosure")
 	}
 }
