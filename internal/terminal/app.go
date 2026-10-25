@@ -391,13 +391,17 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 									if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
 										a.message = err.Error()
 									} else {
-										a.message = "Specialist removed the legacy print controller. Additional rack bays are now available."
+										cleared := a.state.RackJammedRemovals
+									a.message = fmt.Sprintf("Specialist cleared controller %02d. One rack bay unlocked; controller %02d remains at the bottom.", cleared, cleared+1)
+										paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+										visible := visibleRackBays(paneHeight)
+										a.selectedRackModule = len(a.rackBays())-1
+										a.rackRightScroll = max(0, len(a.rackBays())-visible)
 									}
 									a.rackRemovalArmedModule = ""
-									a.rackRightScroll = 0
 								} else {
 									a.rackRemovalArmedModule = mod.ID
-									a.message = "Click [REMOVE] again to confirm specialist removal ($50.00)."
+									a.message = fmt.Sprintf("Click [REMOVE] again to confirm specialist removal ($%s).", money(a.state.JammedLegacyRemovalCost()))
 								}
 								return nil
 							}
@@ -758,13 +762,18 @@ func (a *App) activateMainSelection() {
 		if m.Jammed {
 			if a.rackRemovalArmedModule != m.ID {
 				a.rackRemovalArmedModule = m.ID
-				a.message = "Select [REMOVE] again to confirm specialist removal ($50.00)."
+				a.message = fmt.Sprintf("Select [REMOVE] again to confirm specialist removal ($%s).", money(a.state.JammedLegacyRemovalCost()))
 				return
 			}
 			if err := a.state.RemoveJammedLegacyModule(now); err != nil {
 				a.message = err.Error()
 			} else {
-				a.message = "Specialist removed the legacy print controller."
+				cleared := a.state.RackJammedRemovals
+				a.message = fmt.Sprintf("Specialist cleared controller %02d. One rack bay unlocked; controller %02d remains at the bottom.", cleared, cleared+1)
+				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+				visible := visibleRackBays(paneHeight)
+				a.selectedRackModule = len(a.rackBays())-1
+				a.rackRightScroll = max(0, len(a.rackBays())-visible)
 			}
 			a.rackRemovalArmedModule = ""
 			return
@@ -1078,9 +1087,9 @@ func visibleRackBays(paneHeight int) int {
 }
 
 // rackBays models the rack as physical slots, not a list of cards. Ordinary
-// modules occupy the upper slots, empty bays follow, and the jammed legacy
-// controller is always the bottom-most slot. Removing it leaves its former
-// position empty and opens two additional slots.
+// rackBays returns installed hardware first, unlocked empty bays next, and the
+// current jammed controller last. Each specialist removal unlocks exactly one
+// usable slot while another increasingly expensive obstruction remains.
 func (a *App) rackBays() []*game.ModuleState {
 	var ordinary []*game.ModuleState
 	var jammed *game.ModuleState
@@ -1096,32 +1105,29 @@ func (a *App) rackBays() []*game.ModuleState {
 		}
 	}
 
-	// The seized legacy controller blocks every usable bay. Keep any modules
-	// from an older save visible, but do not expose empty slots until it is gone.
-	bays := make([]*game.ModuleState, 0, len(ordinary)+1)
+	// Preserve modules installed by older saves, but never create bays beyond
+	// the number unlocked by specialist removals.
+	capacity := max(a.state.RackSlotsUnlocked, len(ordinary))
+	bays := make([]*game.ModuleState, 0, capacity+1)
 	bays = append(bays, ordinary...)
-	if jammed != nil {
-		return append(bays, jammed)
-	}
-
-	// There are three physical bays once the legacy controller is removed.
-	// Do not silently grow the rack to leave a spare slot: the rack can be full.
-	capacity := max(3, len(ordinary))
 	for len(bays) < capacity {
 		bays = append(bays, nil)
 	}
+	if jammed != nil {
+		bays = append(bays, jammed)
+	}
 	return bays
 }
-
 func (a *App) rackPanel(l uiLayout) string {
 	var out strings.Builder
 	out.WriteString(titleStyle.Render("MAIN  /  HARDWARE RACK")+"\n")
 	bays := a.rackBays()
 	occupied := 0
 	for _, bay := range bays {
-		if bay != nil { occupied++ }
+		if bay != nil && !bay.Jammed { occupied++ }
 	}
-	out.WriteString(labelStyle.Render(fmt.Sprintf("RACK BAY ARRAY: %02d SLOTS  ·  IN USE: %02d", len(bays), occupied))+"\n")
+	usableSlots := max(a.state.RackSlotsUnlocked, occupied)
+	out.WriteString(labelStyle.Render(fmt.Sprintf("RACK BAY ARRAY: %02d SLOTS  ·  IN USE: %02d", usableSlots, occupied))+"\n")
 	leftWidth, rightWidth := paneWidths(l)
 	paneHeight := max(4, panelLineLimit(l, a.message != "")-2)
 	visibleLeft := max(1, paneHeight-2)
@@ -1172,9 +1178,14 @@ func (a *App) rackPanel(l uiLayout) string {
 					break
 				}
 			}
-			if m.ID == "legacy_controller" { name, color = "LEGACY PRINT CONTROLLER", orange }
+			if m.ID == "legacy_controller" {
+				name, color = "LEGACY PRINT CONTROLLER", orange
+				if a.state.RackJammedRemovals > 0 {
+					name = fmt.Sprintf("LEGACY PRINT CONTROLLER %02d", a.state.RackJammedRemovals+1)
+				}
+			}
 			selected := i == a.selectedRackModule && a.rackFocusRight
-			card = rackModuleCard(*m, name, cardInner, a.rackRemovalArmedModule == m.ID, a.uiFrame, a.diskFrame)
+			card = rackModuleCard(*m, name, cardInner, a.state.JammedLegacyRemovalCost(), a.rackRemovalArmedModule == m.ID, a.uiFrame, a.diskFrame)
 			for row := range card {
 				paddedLine := strings.Repeat(" ", cardPad)+card[row]+strings.Repeat(" ", max(0, contentWidth-cardPad-lipgloss.Width(card[row])))
 				if m.Jammed {
@@ -1203,10 +1214,10 @@ func (a *App) rackPanel(l uiLayout) string {
 // rackModuleCard returns a six-row hardware face regardless of boot state.
 // Its title sits inside the enclosure; the boot bar is replaced by an HDD-style
 // status LED once initialization finishes, keeping the bay dimensions stable.
-func rackModuleCard(m game.ModuleState, name string, inner int, removalArmed bool, frame, diskFrame int64) []string {
+func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int64, removalArmed bool, frame, diskFrame int64) []string {
 	top := "┌"+strings.Repeat("─", inner)+"┐"
 	if m.Jammed {
-		button := "$50 - [REMOVE]"
+		button := fmt.Sprintf("$%d - [REMOVE]", removalCost/100)
 		if removalArmed {
 			button = selectedStyle.Render(button)
 		} else {
