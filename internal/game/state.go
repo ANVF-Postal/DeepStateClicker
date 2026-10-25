@@ -200,8 +200,8 @@ func (s *State) Normalize() {
 		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
 		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "auto_injector" && s.Modules[i].Level > 0 { s.Upgrades.PrintAutomation = true }
 	}
-	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { s.Modules = append(s.Modules, ModuleState{ID:"queue_calibration", Level:1, Installed:true}) }
-	if s.Upgrades.PrintAutomation && moduleLevel(s, "auto_injector") == 0 { s.Modules = append(s.Modules, ModuleState{ID:"auto_injector", Level:1, Installed:true}) }
+	if s.Upgrades.WindowCalibration && s.Module("queue_calibration") == nil { s.Modules = append(s.Modules, ModuleState{ID:"queue_calibration", Level:1, Installed:true}) }
+	if s.Upgrades.PrintAutomation && s.Module("auto_injector") == nil { s.Modules = append(s.Modules, ModuleState{ID:"auto_injector", Level:1, Installed:true}) }
 	if len(s.Messages) == 0 && s.EmailUnlocked {
 		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
 		if s.EmailRead {
@@ -378,11 +378,11 @@ func (s *State) Advance(now time.Time) {
 	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
 	if level := moduleLevel(s, "window_expansion"); level > 0 { windowEnd += level }
 	if level := moduleLevel(s, "queue_calibration"); level > 0 { windowEnd += level }
-	if s.Upgrades.WindowCalibration && moduleLevel(s, "queue_calibration") == 0 { windowEnd++ }
+	if s.Upgrades.WindowCalibration && s.Module("queue_calibration") == nil { windowEnd++ }
 	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
 		s.Batch.WindowOpen = true
 		autoLevel := moduleLevel(s, "auto_injector")
-		if autoLevel == 0 && s.Upgrades.PrintAutomation { autoLevel = 1 }
+		if autoLevel == 0 && s.Upgrades.PrintAutomation && s.Module("auto_injector") == nil { autoLevel = 1 }
 		if autoLevel > 0 && s.Batch.QueuedDollars == 0 {
 			s.Batch.QueuedDollars = autoLevel
 			s.Batch.LastOutcome = fmt.Sprintf("The automatic injector queued %d instruction(s).",autoLevel)
