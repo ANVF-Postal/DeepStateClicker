@@ -1008,15 +1008,15 @@ func (a *App) rackPanel(l uiLayout) string {
 		}
 		if m.ID == "legacy_controller" { name, color = "LEGACY PRINT CONTROLLER", orange }
 		selected := i == a.selectedRackModule && a.rackFocusRight
-		card := rackModuleCard(m, name, color, cardInner, selected, a.rackRemovalArmedModule == m.ID, a.uiFrame)
+		card := rackModuleCard(m, name, cardInner, a.rackRemovalArmedModule == m.ID, a.uiFrame)
 		for _, line := range card {
 			paddedLine := strings.Repeat(" ", cardPad)+line+strings.Repeat(" ", max(0,paneInner-cardPad-lipgloss.Width(line)))
 			if m.Jammed {
 				right.WriteString(orangeRackStyle(selected).Render(paddedLine)+"\n")
-			} else if selected {
-				right.WriteString(lipgloss.NewStyle().Bold(true).Render(paddedLine)+"\n")
 			} else {
-				right.WriteString(paddedLine+"\n")
+				style := lipgloss.NewStyle().Foreground(color)
+				if selected { style = style.Bold(true) }
+				right.WriteString(style.Render(paddedLine)+"\n")
 			}
 		}
 		if i < endR-1 { right.WriteString("\n") }
@@ -1038,14 +1038,17 @@ func (a *App) rackPanel(l uiLayout) string {
 
 // rackModuleCard returns fully enclosed module faces. Jammed legacy hardware
 // has no revision row and exposes a confirmation-style specialist removal button.
-func rackModuleCard(m game.ModuleState, name string, color lipgloss.Color, inner int, selected, removalArmed bool, frame int64) []string {
-	_ = color // The caller applies the module's color to the complete box.
+func rackModuleCard(m game.ModuleState, name string, inner int, removalArmed bool, frame int64) []string {
 	remove := ""
 	if !m.Jammed { remove = "[X]" }
 	top := "┌"+padCells(" "+truncate(name, max(8, inner-7)), remove, inner)+"┐"
 	if m.Jammed {
 		button := "$50 - [REMOVE]"
-		if removalArmed { button = "$50 - [REMOVE]" }
+		if removalArmed {
+			button = selectedStyle.Render(button)
+		} else {
+			button = dangerStyle.Render(button)
+		}
 		return []string{
 			top,
 			"│"+padCells(" JAMMED - SPECIALIST REMOVAL", "", inner)+"│",
@@ -1070,7 +1073,6 @@ func rackModuleCard(m game.ModuleState, name string, color lipgloss.Color, inner
 		card = append(card, "│"+padCells(" "+flicker, "", inner)+"│")
 	}
 	card = append(card, "└"+strings.Repeat("─", inner)+"┘")
-	_ = selected
 	return card
 }
 
