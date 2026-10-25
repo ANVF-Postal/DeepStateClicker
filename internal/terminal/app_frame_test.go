@@ -298,3 +298,154 @@ func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
 		t.Fatalf("specialist removal should cost $50, cash=%d", app.state.CashOnHand)
 	}
 }
+
+
+func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
+	inner := 42
+	installed := game.ModuleState{ID: "window_expansion", Level: 1, Installed: true}
+	booting := installed
+	booting.Booting = true
+	booting.BootTicksTotal = 10
+	booting.BootTicksRemaining = 4
+	jammed := game.ModuleState{ID: "legacy_controller", Level: 1, Installed: true, Jammed: true}
+
+	for _, tc := range []struct {
+		name string
+		module game.ModuleState
+		want string
+	}{
+		{name: "operational", module: installed, want: "WINDOW EXPANSION"},
+		{name: "booting", module: booting, want: "WINDOW EXPANSION"},
+		{name: "jammed legacy", module: jammed, want: "JAMMED - SPECIALIST REMOVAL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "WINDOW EXPANSION"
+			if tc.module.ID == "legacy_controller" {
+				name = "LEGACY PRINT CONTROLLER"
+			}
+			lines := rackModuleCard(tc.module, name, inner, false, 4, 7)
+			if len(lines) != rackBayHeight {
+				t.Fatalf("module card has %d rows; want %d", len(lines), rackBayHeight)
+			}
+			if strings.Contains(ansiSequences.ReplaceAllString(lines[0], ""), name) {
+				t.Fatalf("module title should be inside the enclosure, not interrupt the top border: %q", lines[0])
+			}
+			if !strings.Contains(ansiSequences.ReplaceAllString(strings.Join(lines, "\n"), ""), tc.want) {
+				t.Fatalf("module card does not show expected text %q: %q", tc.want, lines)
+			}
+			for row, line := range lines {
+				if got := lipgloss.Width(line); got != inner+2 {
+					t.Errorf("row %d has width %d; want %d", row, got, inner+2)
+				}
+			}
+			if tc.name == "operational" && !strings.Contains(ansiSequences.ReplaceAllString(lines[4], ""), ".") {
+				t.Fatal("operational module should have a status LED in the reserved activity row")
+			}
+			if tc.name == "jammed legacy" {
+				plain := ansiSequences.ReplaceAllString(strings.Join(lines, "\n"), "")
+				if strings.Contains(plain, "REV") {
+					t.Fatal("jammed legacy module should not display a revision line")
+				}
+				if !strings.Contains(plain, "$50 - [REMOVE]") {
+					t.Fatal("jammed legacy module should display the specialist removal control")
+				}
+			}
+		})
+	}
+}
+
+func TestRemovingLegacyControllerRevealsAdditionalEmptyBays(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	before := app.rackBays()
+	if len(before) != 3 {
+		t.Fatalf("legacy rack should initially show 3 bays, got %d", len(before))
+	}
+	app.state.CashOnHand = 10_000
+	if err := app.state.RemoveJammedLegacyModule(time.Unix(2, 0)); err != nil {
+		t.Fatalf("remove legacy controller: %v", err)
+	}
+	after := app.rackBays()
+	if len(after) != 5 {
+		t.Fatalf("removing legacy controller should reveal 2 additional bays, got %d", len(after))
+	}
+	empty := 0
+	for _, bay := range after {
+		if bay == nil {
+			empty++
+		}
+	}
+	if empty < 4 {
+		t.Fatalf("expected newly unlocked empty bays, got %d empty slots", empty)
+	}
+}
+
+func TestRackScrollbarIsVerticalAtPaneRightEdge(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.PurchaseModule("window_expansion", time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.state.InstallModule("window_expansion", time.Unix(3, 0)); err != nil {
+		t.Fatal(err)
+	}
+	app.mainView = "rack"
+
+	lines := plainViewLines(app.View())
+	leftWidth, rightWidth := paneWidths(app.layout())
+	railX := 2 + leftWidth + 1 + rightWidth - 2
+	foundHeader := false
+	railRows := 0
+	for _, line := range lines {
+		if strings.Contains(line, "INSTALLED RACK") {
+			foundHeader = true
+		}
+		if foundHeader && strings.Contains(line, "└") {
+			break
+		}
+		if foundHeader {
+			runes := []rune(line)
+			if railX >= len(runes) {
+				t.Fatalf("right rack pane line is too narrow for scrollbar at x=%d: %q", railX, line)
+			}
+			if runes[railX] != '█' && runes[railX] != '░' {
+				t.Fatalf("scrollbar cell at x=%d should be vertical track/thumb, got %q in %q", railX, string(runes[railX]), line)
+			}
+			railRows++
+		}
+	}
+	if railRows < 6 {
+		t.Fatalf("expected a vertical scrollbar spanning the rack pane, found %d rows", railRows)
+	}
+}
+
+func TestRemovingLegacyModuleButtonCreatesBlankBayCards(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "rack"
+
+	lines := plainViewLines(app.View())
+	emptyBayCount := 0
+	for y, line := range lines {
+		if strings.Contains(line, "JAMMED - SPECIALIST REMOVAL") {
+			continue
+		}
+		if strings.Contains(line, "INSTALLED RACK") {
+			// Count the two complete blank-bay enclosures that fit in the initial viewport.
+			for i := y + 1; i+5 < len(lines); i += rackBayHeight {
+				if strings.Contains(lines[i], "┌") && strings.TrimSpace(ansiSequences.ReplaceAllString(lines[i+1], " ")) == "" {
+					emptyBayCount++
+				}
+				if emptyBayCount >= 2 { break }
+			}
+			break
+		}
+	}
+	if emptyBayCount == 0 {
+		t.Fatal("rack should render at least one empty bay as a full blank enclosure")
+	}
+}
