@@ -477,6 +477,10 @@ func (a *App) installedModules() []game.ModuleState {
 	return result
 }
 
+func (a *App) selectRackModule(id string) {
+	for i,m := range a.installedModules() { if m.ID==id { a.selectedRackModule=i; return } }
+}
+
 func (a *App) hasPurchasedModule() bool {
 	for _, spec := range game.ModuleCatalog { if m:=a.state.Module(spec.ID); m!=nil && m.Level>0 { return true } }
 	return false
@@ -507,7 +511,7 @@ func (a *App) activateMainSelection() {
 				spec := game.ModuleCatalog[a.selectedUpgrade]
 				if m := a.state.Module(spec.ID); m != nil && m.Installed {
 					a.message = "Module already installed. Open UPGRADES to improve its revision."
-				} else if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" transferred to rack; initialization sequence started."; a.rackFocusRight = true; a.selectedRackModule = max(0,len(a.installedModules())-1) }
+				} else if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" transferred to rack; initialization sequence started."; a.rackFocusRight = true; a.selectRackModule(spec.ID) }
 			}
 		}
 	}
@@ -517,7 +521,7 @@ func (a *App) buySelectedModule(now time.Time) {
 	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) { return }
 	spec := game.ModuleCatalog[a.selectedUpgrade]
 	if spec.ID == "obfuscation" && a.state.Risk < 25 { a.message = "Signal obfuscation remains unavailable until scrutiny increases."; return }
-	if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { m:=a.state.Module(spec.ID); a.message = spec.Name+" transferred to rack; initialization sequence started (REV "+fmt.Sprint(m.Level)+")."; a.mainView = "rack"; a.rackFocusRight = true; a.selectedRackModule = max(0,len(a.installedModules())-1) }
+	if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { m:=a.state.Module(spec.ID); a.message = spec.Name+" transferred to rack; initialization sequence started (REV "+fmt.Sprint(m.Level)+")."; a.mainView = "rack"; a.rackFocusRight = true; a.selectRackModule(spec.ID) }
 }
 
 func lWidthForRack(width int) int { return max(24,min(38,width/3)) }
@@ -794,12 +798,10 @@ func (a *App) rackPanel(l uiLayout) string {
 
 		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
 	}
-	if true {
-		inner:=max(16,min(rightWidth-5,36))-2
-		right.WriteString(labelStyle.Render("┌"+strings.Repeat("─",inner)+"┐")+"\n")
-		right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY","",inner)+"│")+"\n")
-		right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n")
-	}
+	inner:=max(16,min(rightWidth-5,36))-2
+	right.WriteString(labelStyle.Render("┌"+strings.Repeat("─",inner)+"┐")+"\n")
+	right.WriteString(labelStyle.Render("│"+padCells(" EMPTY BAY","",inner)+"│")+"\n")
+	right.WriteString(labelStyle.Render("└"+strings.Repeat("─",inner)+"┘")+"\n"
 	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
 	right.WriteString("\n"+selectedStyle.Render("[ENTER] ACQUIRE / REMOVE SELECTED")+"\n"+labelStyle.Render("[U] UPGRADES · [B] BACK"))
 	rightPane:=windowPane("RACK BUS",right.String(),rightWidth)
