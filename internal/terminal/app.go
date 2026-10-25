@@ -239,6 +239,25 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		switch a.state.CurrentTab {
 		case game.TabPrint, game.TabStore:
 			if strings.Contains(line, "INJECT") && a.mainView != "rack" && a.mainView != "upgrades" { return a.handleGameKey("x") }
+			if a.mainView == "upgrades" {
+				for row, text := range lines {
+					if strings.Contains(text,"MODULE CATALOGUE") {
+						idx := (y-row-1)/2
+						if idx >= 0 && idx < len(game.ModuleCatalog) { a.selectedUpgrade = idx; return nil }
+					}
+				}
+			}
+			if a.mainView == "rack" {
+				for i, spec := range game.ModuleCatalog {
+					if strings.Contains(line,spec.Name) { a.selectedUpgrade = i; a.rackFocusRight = false; return nil }
+				}
+				for i, mod := range a.installedModules() {
+					name := mod.ID
+					for _, spec := range game.ModuleCatalog { if spec.ID==mod.ID { name=spec.Name; break } }
+					if mod.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER" }
+					if strings.Contains(line,name) || (mod.Jammed && strings.Contains(line,"JAMMED")) { a.selectedRackModule=i; a.rackFocusRight=true; return nil }
+				}
+			}
 			switch {
 			case strings.Contains(line, "[U] UPGRADES"): a.mainView = "upgrades"; a.selectedUpgrade = 0
 			case strings.Contains(line, "[R] HARDWARE RACK"): a.mainView = "rack"; a.rackFocusRight = false
