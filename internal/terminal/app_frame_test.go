@@ -108,6 +108,7 @@ func TestUpgradeCatalogueOmitsAvailableStatusColumn(t *testing.T) {
 
 func TestUppercaseRackShortcutAndMainRackClick(t *testing.T) {
 	app := New(game.NewState(time.Now()))
+	app.width, app.height = 100, 31
 	app.screen = screenGame
 	app.state.CurrentTab = game.TabPrint
 	app.state.Modules = append(app.state.Modules, game.ModuleState{
