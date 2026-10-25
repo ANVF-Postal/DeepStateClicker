@@ -9,8 +9,10 @@ import (
 const (
 	InitialCashCapacity int64 = 100_000 // $1,000.00
 	PrintAmount         int64 = 100     // $1.00
-	CapacityUpgradeCost int64 = 2_500   // $25.00
-	CapacityUpgradeTo   int64 = 250_000 // $2,500.00
+	CapacityUpgradeCost int64 = 2_500   // $25.00 (legacy single-box upgrade)
+	CapacityUpgradeTo   int64 = 250_000 // $2,500.00 (legacy save compatibility)
+	LockboxCost         int64 = 2_500   // $25.00
+	LockboxCapacity     int64 = 500_000 // $5,000.00
 	AutomationCost      int64 = 5_000   // $50.00
 
 	BatchCycleTicks = 60
@@ -41,6 +43,7 @@ type Tab string
 const (
 	TabPrint Tab = "PRINT"
 	TabStore Tab = "STORE"
+	TabStorage Tab = "STORAGE"
 	TabMessages Tab = "MESSAGES"
 	TabEmail Tab = TabMessages // compatibility with the early prototype
 )
@@ -116,6 +119,8 @@ type State struct {
 	CurrentTab Tab `json:"current_tab"`
 	CashOnHand int64 `json:"cash_on_hand_cents"`
 	CashCapacity int64 `json:"cash_capacity_cents"`
+	StorageUnlocked bool `json:"storage_unlocked,omitempty"`
+	LockboxCount int `json:"lockbox_count,omitempty"`
 	TotalPrinted int64 `json:"total_printed_cents"`
 	EstimatedNetWorth int64 `json:"estimated_net_worth_cents"`
 	Risk int `json:"risk"`
@@ -178,6 +183,7 @@ func (s *State) Normalize() {
 	if s.CurrentTab == "EMAIL" { s.CurrentTab = TabMessages }
 	if s.CurrentTab == "" { s.CurrentTab = TabPrint }
 	if s.CashCapacity == 0 { s.CashCapacity = InitialCashCapacity }
+	if s.LockboxCount < 0 { s.LockboxCount = 0 }
 	if s.Batch.Number == 0 {
 		s.Batch.Number = s.TotalPrinted/PrintAmount + 1
 		s.Batch.Completed = s.Batch.Number - 1
@@ -208,12 +214,6 @@ func (s *State) PrintOneDollar(now time.Time) error {
 func (s *State) QueueExploit(now time.Time) error {
 	if s.Status != RunFederal && s.Status != RunSandbox { return errors.New("this run is no longer active") }
 	if !s.Batch.WindowOpen { return ErrWindowClosed }
-	if s.CashOnHand+int64(s.Batch.QueuedDollars+1)*PrintAmount > s.CashCapacity {
-		s.Risk = clamp(s.Risk+1, 0, 100)
-		s.addEvent("overflow_attempt", "The cash drawer is full. You let the opportunity pass.", now)
-		s.UpdatedAt = now
-		return ErrCapacityFull
-	}
 	s.Batch.QueuedDollars++
 	s.Batch.LastOutcome = "An extra print instruction is queued for the active batch."
 	s.UpdatedAt = now
@@ -278,6 +278,22 @@ func (s *State) RemoveJammedLegacyModule(now time.Time) error {
 	return nil
 }
 
+func (s *State) BuyLockbox(now time.Time) error {
+	if s.CashOnHand < LockboxCost { return ErrInsufficient }
+	s.CashOnHand -= LockboxCost
+	s.LockboxCount++
+	added := LockboxCapacity
+	if s.LockboxCount > 3 {
+		added = 350_000 // Clutter makes each additional loose box less space-efficient.
+		s.Risk = clamp(s.Risk+1,0,100)
+	}
+	s.CashCapacity += added
+	s.StorageUnlocked = true
+	s.addEvent("storage", fmt.Sprintf("Lockbox %02d added to the apartment. Capacity increased by $%s.",s.LockboxCount,moneyString(added)),now)
+	s.UpdatedAt = now
+	return nil
+}
+
 func (s *State) BuyCapacityUpgrade(now time.Time) error {
 	if s.Upgrades.ExpandedCashCapacity { return ErrUpgradeOwned }
 	if s.CashOnHand < CapacityUpgradeCost { return ErrInsufficient }
@@ -333,15 +349,19 @@ func (s *State) Advance(now time.Time) {
 	if s.Batch.Progress >= BatchCycleTicks {
 		if s.Batch.QueuedDollars > 0 {
 			amount := int64(s.Batch.QueuedDollars) * PrintAmount
-			if s.CashOnHand+amount <= s.CashCapacity {
-				s.CashOnHand += amount
-				s.TotalPrinted += amount
-				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered cash on hand.", s.Batch.Number, moneyString(amount))
-				s.addEvent("batch_complete", s.Batch.LastOutcome, now)
+			beforeOverflow := maxInt64(0,s.CashOnHand-s.CashCapacity)
+			s.CashOnHand += amount
+			s.TotalPrinted += amount
+			afterOverflow := maxInt64(0,s.CashOnHand-s.CashCapacity)
+			newOverflow := afterOverflow-beforeOverflow
+			if newOverflow > 0 {
+				riskAdded := int((newOverflow+99)/100) // Each excess dollar adds exposure, capped by the risk scale.
+				s.Risk = clamp(s.Risk+max(1,riskAdded),0,100)
+				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered capital; capacity exceeded by $%s.",s.Batch.Number,moneyString(amount),moneyString(afterOverflow))
+				s.addEvent("overflow",s.Batch.LastOutcome,now)
 			} else {
-				s.Risk = clamp(s.Risk+2, 0, 100)
-				s.Batch.LastOutcome = "Batch completed, but the excess cash had nowhere safe to go."
-				s.addEvent("overflow", s.Batch.LastOutcome, now)
+				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered capital on hand.", s.Batch.Number, moneyString(amount))
+				s.addEvent("batch_complete", s.Batch.LastOutcome, now)
 			}
 		} else {
 			s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. No extra instruction was sent.", s.Batch.Number)
@@ -367,6 +387,7 @@ func (s *State) Advance(now time.Time) {
 			s.addEvent("message_received", "A new message has arrived in your internal inbox.", now)
 		}
 	}
+	if s.CashCapacity > 0 && s.CashOnHand*100 >= s.CashCapacity*80 { s.StorageUnlocked = true }
 	if s.Tick%30 == 0 { s.Risk = clamp(s.Risk+1, 0, 100) }
 	s.advanceMail(now)
 	// Net worth is an estimate, not spendable cash.
@@ -378,7 +399,8 @@ func (s *State) Advance(now time.Time) {
 
 func (s *State) OpenTab(tab Tab) error {
 	if tab == TabMessages && !s.EmailUnlocked { return errors.New("MESSAGES is not available yet") }
-	if tab != TabPrint && tab != TabStore && tab != TabMessages { return errors.New("unknown tab") }
+	if tab == TabStorage && !s.StorageUnlocked { return errors.New("STORAGE is not available yet") }
+	if tab != TabPrint && tab != TabStore && tab != TabStorage && tab != TabMessages { return errors.New("unknown tab") }
 	s.CurrentTab = tab
 	return nil
 }
@@ -497,6 +519,8 @@ func (s *State) addEvent(kind, text string, now time.Time) {
 }
 
 func moneyString(cents int64) string { return fmt.Sprintf("%d.%02d", cents/100, cents%100) }
+
+func maxInt64(a,b int64) int64 { if a>b { return a }; return b }
 
 func clamp(n, min, max int) int {
 	if n < min { return min }
