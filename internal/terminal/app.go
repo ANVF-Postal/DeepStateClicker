@@ -105,9 +105,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.screen == screenMenu && a.menu > 0 { a.menu-- } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(-1) } else if a.screen == screenGame { a.moveMainSelection(-1) }
 		case "down", "j":
 			if a.screen == screenMenu && a.menu < 2 { a.menu++ } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(1) } else if a.screen == screenGame { a.moveMainSelection(1) }
-		case "left", "h":
+		case "left":
 			if a.screen == screenGame && a.mainView == "rack" { a.rackFocusRight = false }
-		case "right", "l":
+		case "right":
 			if a.screen == screenGame && a.mainView == "rack" { a.rackFocusRight = true }
 		case "enter":
 			switch a.screen {
@@ -316,7 +316,6 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.message = "" }
 	case "r": if a.state.CurrentTab == game.TabPrint { a.mainView = "rack"; a.rackFocusRight = false; a.message = "" }
-	case "b": if a.mainView == "rack" || a.mainView == "upgrades" { a.activateMainSelection() } else { _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = "" }
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -328,7 +327,6 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 	case "v":
 		if err := save.Write(savePath, a.state); err != nil { a.message = "Save failed: "+err.Error() } else { a.message = "Saved to "+savePath }
 	case "h", "?": a.message = "X/P inject  •  MAIN: 1–3 upgrades  •  M messages  •  1–3 reply  •  I ignore  •  V save  •  Q quit"
-	case "enter": a.activateMainSelection()
 	case "q": a.autosave(); return tea.Quit
 	}
 	return nil
