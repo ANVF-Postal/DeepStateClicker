@@ -43,6 +43,12 @@ type App struct {
 	injectFlashUntil time.Time
 	injectMouseHeld bool
 	injectHeldRed bool
+	mainView string
+	selectedUpgrade int
+	selectedRackModule int
+	rackFocusRight bool
+	rackLeftScroll int
+	rackRightScroll int
 }
 
 func New(state game.State) *App {
@@ -96,9 +102,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.autosave()
 			return a, tea.Quit
 		case "up", "k":
-			if a.screen == screenMenu && a.menu > 0 { a.menu-- } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(-1) }
+			if a.screen == screenMenu && a.menu > 0 { a.menu-- } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(-1) } else if a.screen == screenGame { a.moveMainSelection(-1) }
 		case "down", "j":
-			if a.screen == screenMenu && a.menu < 2 { a.menu++ } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(1) }
+			if a.screen == screenMenu && a.menu < 2 { a.menu++ } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(1) } else if a.screen == screenGame { a.moveMainSelection(1) }
+		case "left", "h":
+			if a.screen == screenGame && a.mainView == "rack" { a.rackFocusRight = false }
+		case "right", "l":
+			if a.screen == screenGame && a.mainView == "rack" { a.rackFocusRight = true }
 		case "enter":
 			switch a.screen {
 			case screenMenu:
@@ -107,7 +117,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.screen, a.message = screenGame, ""
 				return a, tea.Batch(tick(), uiPulse())
 			case screenGame:
-				if a.state.CurrentTab == game.TabMessages { a.message = "" }
+				if a.state.CurrentTab == game.TabMessages { a.message = "" } else { a.activateMainSelection() }
 			}
 		case "n":
 			if a.screen == screenMenu { a.screen = screenIntro }
@@ -124,7 +134,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch a.screen {
 			case screenMenu: return a, tea.Quit
 			case screenIntro: a.screen = screenMenu
-			case screenGame: _ = a.state.OpenTab(game.TabPrint); a.message = ""
+			case screenGame: _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 			}
 		default:
 			if a.screen == screenGame { return a, a.handleGameKey(msg.String()) }
@@ -228,14 +238,14 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 
 		switch a.state.CurrentTab {
 		case game.TabPrint, game.TabStore:
-			if strings.Contains(line, "INJECT") { return a.handleGameKey("x") }
+			if strings.Contains(line, "INJECT") && a.mainView != "rack" && a.mainView != "upgrades" { return a.handleGameKey("x") }
 			switch {
-			case strings.Contains(line, "Lockable cash box") || strings.Contains(line, "CASH CAPACITY"):
-				return a.handleGameKey("1")
-			case strings.Contains(line, "Queue indicator calibration") || strings.Contains(line, "QUEUE CALIBRATION"):
-				return a.handleGameKey("2")
-			case strings.Contains(line, "Quiet exploit automation") || strings.Contains(line, "PRINT AUTOMATION"):
-				return a.handleGameKey("3")
+			case strings.Contains(line, "[U] UPGRADES"): a.mainView = "upgrades"; a.selectedUpgrade = 0
+			case strings.Contains(line, "[R] HARDWARE RACK"): a.mainView = "rack"; a.rackFocusRight = false
+			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
+			case a.mainView == "upgrades" && strings.Contains(line, "BUY"): a.activateMainSelection()
+			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
+				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
 		case game.TabMessages:
 			switch {
@@ -286,24 +296,27 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 			} else { a.message = err.Error() }
 		} else { a.injectHeldRed = false; a.message = "" }
 	case "1":
-		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
-			if err := a.state.BuyCapacityUpgrade(now); err != nil { a.message = err.Error() } else { a.message = "Cash box installed." }
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+			a.mainView = "upgrades"; a.selectedUpgrade = 0
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(0, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "2":
-		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
-			if err := a.state.BuyWindowCalibration(now); err != nil { a.message = err.Error() } else { a.message = "Queue indicator calibration installed." }
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+			a.mainView = "rack"
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(1, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "3":
-		if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
-			if err := a.state.BuyAutomation(now); err != nil { a.message = err.Error() } else { a.message = "Exploit automation enabled." }
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+			a.mainView = "print"
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(2, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
-	case "s": _ = a.state.OpenTab(game.TabPrint); a.message = ""
+	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
+	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.message = "" }
+	case "r": if a.state.CurrentTab == game.TabPrint { a.mainView = "rack"; a.rackFocusRight = false; a.message = "" }
+	case "b": if a.mainView == "rack" || a.mainView == "upgrades" { a.activateMainSelection() } else { _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = "" }
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -311,10 +324,11 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 		}
 	case "i":
 		if err := a.state.IgnoreSelectedMessage(now); err != nil { a.message = err.Error() } else { a.message = "You leave the message unanswered." }
-	case "b", "esc": _ = a.state.OpenTab(game.TabPrint); a.message = ""
+	case "b", "esc": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "v":
 		if err := save.Write(savePath, a.state); err != nil { a.message = "Save failed: "+err.Error() } else { a.message = "Saved to "+savePath }
 	case "h", "?": a.message = "X/P inject  •  MAIN: 1–3 upgrades  •  M messages  •  1–3 reply  •  I ignore  •  V save  •  Q quit"
+	case "enter": a.activateMainSelection()
 	case "q": a.autosave(); return tea.Quit
 	}
 	return nil
@@ -389,6 +403,63 @@ func (a *App) introView() string {
 	return lipgloss.NewStyle().Padding(2,3).Width(width).Render(content)
 }
 
+func (a *App) moveMainSelection(delta int) {
+	if a.mainView == "upgrades" {
+		a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
+		return
+	}
+	if a.mainView == "rack" {
+		if a.rackFocusRight {
+			installed := a.installedModules()
+			a.selectedRackModule = max(0, min(max(0,len(installed)-1), a.selectedRackModule+delta))
+			if a.selectedRackModule >= a.trackRightScroll+4 { a.trackRightScroll = a.selectedRackModule-3 }
+			if a.selectedRackModule < a.trackRightScroll { a.trackRightScroll = a.selectedRackModule }
+		} else {
+			a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
+			if a.selectedUpgrade >= a.trackLeftScroll+5 { a.trackLeftScroll = a.selectedUpgrade-4 }
+			if a.selectedUpgrade < a.trackLeftScroll { a.trackLeftScroll = a.selectedUpgrade }
+		}
+	}
+}
+
+func (a *App) installedModules() []game.ModuleState {
+	var result []game.ModuleState
+	for _, m := range a.state.Modules { if m.Installed { result = append(result,m) } }
+	return result
+}
+
+func (a *App) activateMainSelection() {
+	now := time.Now()
+	if a.mainView == "upgrades" { a.buySelectedModule(now); return }
+	if a.mainView == "rack" {
+		if a.rackFocusRight {
+			installed := a.installedModules()
+			if a.selectedRackModule >= 0 && a.selectedRackModule < len(installed) {
+				m := installed[a.selectedRackModule]
+				var err error
+				if m.Jammed { err = a.state.RemoveJammedLegacyModule(now) } else { err = a.state.RemoveModule(m.ID,now) }
+				if err != nil { a.message = err.Error() } else { a.message = "Module removed from rack." }
+			}
+		} else {
+			if a.selectedUpgrade >= 0 && a.selectedUpgrade < len(game.ModuleCatalog) {
+				spec := game.ModuleCatalog[a.selectedUpgrade]
+				if m := a.state.Module(spec.ID); m != nil && m.Installed {
+					a.message = "Module already installed. Open UPGRADES to improve its revision."
+				} else if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" installed in the rack." }
+			}
+		}
+	}
+}
+
+func (a *App) buySelectedModule(now time.Time) {
+	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) { return }
+	spec := game.ModuleCatalog[a.selectedUpgrade]
+	if spec.ID == "obfuscation" && a.state.Risk < 25 { a.message = "Signal obfuscation remains unavailable until scrutiny increases."; return }
+	if err := a.state.BuyOrUpgradeModule(spec.ID,now); err != nil { a.message = err.Error() } else { a.message = spec.Name+" upgraded to revision "+fmt.Sprint(a.state.Module(spec.ID).Level)+"." }
+}
+
+func lWidthForRack(width int) int { return max(24,min(38,width/3)) }
+
 func (a *App) gameView() string {
 	l := a.layout()
 	var b strings.Builder
@@ -423,7 +494,12 @@ func (a *App) gameView() string {
 	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
 	var panel string
 	switch a.state.CurrentTab {
-	case game.TabPrint, game.TabStore: panel = a.printPanel(l)
+	case game.TabPrint, game.TabStore:
+		switch a.mainView {
+		case "upgrades": panel = a.upgradesPanel(l)
+		case "rack": panel = a.rackPanel(l)
+		default: panel = a.printPanel(l)
+		}
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
 	panelLines := max(4, l.TickerY-l.ContentY-4)
@@ -438,10 +514,37 @@ func (a *App) gameView() string {
 
 
 func (a *App) cashPanelView(width int) string {
-	cash := labelStyle.Render("CASH ON HAND")+"  "+lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand))+
-		labelStyle.Render(" / $"+money(a.state.CashCapacity))+"    "+labelStyle.Render("TOTAL PRINTED ")+lipgloss.NewStyle().Foreground(ink).Render("$"+money(a.state.TotalPrinted))+
-		"\n"+labelStyle.Render("EST. NET WORTH  ")+lipgloss.NewStyle().Foreground(ink).Bold(true).Render("$"+money(a.state.EstimatedNetWorth))
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(muted).Padding(0,2).Width(max(20,min(width-6,60))).Render(cash)
+	boxWidth := max(28,min(width-4,68))
+	inner := boxWidth-2
+	title := " CAPITAL "
+	top := "┌─"+title+strings.Repeat("─",max(0,inner-len(title)-1))+"┐"
+	cashLine := " CAPITAL ON HAND  $"+money(a.state.CashOnHand)
+	capacityLine := " CAPACITY         $"+money(a.state.CashCapacity)
+	netLine := " EST. NET WORTH   ~$"+money(a.state.EstimatedNetWorth)
+	totalLine := " TOTAL PRINTED    $"+money(a.state.TotalPrinted)
+	util := 0
+	if a.state.CashCapacity > 0 { util = int(a.state.CashOnHand*100/a.state.CashCapacity) }
+	barWidth := max(10,inner-14)
+	filled := min(barWidth,max(0,util*barWidth/100))
+	bar := strings.Repeat("━",filled)+strings.Repeat("─",barWidth-filled)
+	barColor := green
+	if util >= 80 { barColor = amber }
+	if util >= 100 {
+		r := []rune(bar)
+		if len(r)>0 { r[len(r)-1] = '!' }
+		bar = string(r)
+	}
+	status := fmt.Sprintf(" %3d%% UTILIZED",util)
+	if util >= 100 { status = fmt.Sprintf(" %3d%% OVERFLOW",util) }
+	lines := []string{
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(amber).Bold(true).Render(truncate(cashLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(cashLine,inner)))) )+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(capacityLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(capacityLine,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(truncate(netLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(netLine,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(totalLine,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(totalLine,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(barColor).Render(truncate(bar,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(bar,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(barColor).Render(truncate(status,inner))+strings.Repeat(" ",max(0,inner-len([]rune(truncate(status,inner)))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+	}
+	return lipgloss.NewStyle().Width(boxWidth).Render(strings.Join(append([]string{top},append(lines,"└"+strings.Repeat("─",inner)+"┘")...), "\n"))
 }
 
 func (a *App) printPanel(l uiLayout) string {
@@ -450,10 +553,7 @@ func (a *App) printPanel(l uiLayout) string {
 	if a.state.Status == game.RunFederal || a.state.Status == game.RunSandbox { b.WriteString(okStyle.Render("SYSTEM READY")) } else { b.WriteString(dangerStyle.Render("SYSTEM OFFLINE")) }
 	b.WriteString("\n")
 	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk))+"\n")
-	b.WriteString(labelStyle.Render("CASH ON HAND  "))
-	b.WriteString(lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand)))
-	b.WriteString(labelStyle.Render(" / CAPACITY $"+money(a.state.CashCapacity))+"\n")
-	b.WriteString(labelStyle.Render("TOTAL PRINTED  $"+money(a.state.TotalPrinted)+"    EST. NET WORTH  $"+money(a.state.EstimatedNetWorth))+"\n")
+	b.WriteString(a.cashPanelView(l.Width)+"\n\n")
 	b.WriteString(titleStyle.Render("PRINT WINDOW")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d", a.state.Batch.Number))+"\n")
 	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY OPEN")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n")
 	} else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n") }
@@ -473,13 +573,104 @@ func (a *App) printPanel(l uiLayout) string {
 	if a.state.Batch.LastOutcome != "" && !strings.Contains(outcome, "queue moved on") && !strings.Contains(outcome, "no instruction was sent") {
 		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
 	}
-	b.WriteString(titleStyle.Render("UPGRADES")+"\n")
-	if a.state.Upgrades.ExpandedCashCapacity { b.WriteString(okStyle.Render("[1] CASH CAPACITY — INSTALLED")+"\n")
-	} else { b.WriteString(selectedStyle.Render("[1]")+" "+labelStyle.Render("Lockable cash box — $"+money(game.CapacityUpgradeCost))+"\n") }
-	if a.state.Upgrades.WindowCalibration { b.WriteString(okStyle.Render("[2] QUEUE CALIBRATION — INSTALLED")+"\n")
-	} else { b.WriteString(selectedStyle.Render("[2]")+" "+labelStyle.Render("Queue indicator calibration — $15.00")+"\n") }
-	if a.state.Upgrades.PrintAutomation { b.WriteString(okStyle.Render("[3] PRINT AUTOMATION — INSTALLED")+"\n")
-	} else { b.WriteString(selectedStyle.Render("[3]")+" "+labelStyle.Render("Quiet exploit automation — $"+money(game.AutomationCost))+"\n") }
+	b.WriteString("\n"+selectedStyle.Render("[U] UPGRADES")+"   "+selectedStyle.Render("[R] HARDWARE RACK")+"\n")
+	b.WriteString(labelStyle.Render("The machine is old. The unused bays still accept modules."))
+	return b.String()
+}
+
+func (a *App) upgradesPanel(l uiLayout) string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("MAIN  /  UPGRADES")+"\n")
+	b.WriteString(labelStyle.Render("MODULE DEVELOPMENT  ·  SELECT AN ITEM, REVIEW ITS REVISION, THEN BUY")+"\n\n")
+	leftWidth := max(22,min(34,l.Width/3))
+	var left,right strings.Builder
+	left.WriteString(titleStyle.Render("MODULE CATALOGUE")+"\n")
+	for i,spec := range game.ModuleCatalog {
+		status := "AVAILABLE"
+		m := a.state.Module(spec.ID)
+		if m != nil && m.Installed { status = fmt.Sprintf("REV %d",m.Level) }
+		if spec.ID=="obfuscation" && a.state.Risk<25 { status="LOCKED" }
+		line := truncate(fmt.Sprintf("%s %s",map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],spec.Name),leftWidth-2)
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color)).Background(lipgloss.Color("#101010"))
+		if i==a.selectedUpgrade { style = style.Bold(true).Underline(true) }
+		left.WriteString(style.Render(line)+"\n")
+		left.WriteString(labelStyle.Render("  "+status)+"\n")
+	}
+	spec := game.ModuleCatalog[max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade))]
+	m := a.state.Module(spec.ID)
+	level := 0
+	if m!=nil { level=m.Level }
+	right.WriteString(titleStyle.Render(spec.Name)+"\n\n")
+	right.WriteString(wrapText(spec.Description,max(20,l.Width-leftWidth-10))+"\n\n")
+	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %d / %d",level,spec.MaxLevel))+"\n")
+	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5",spec.Suspicion))+"\n")
+	if spec.ID=="obfuscation" && a.state.Risk<25 {
+		right.WriteString(dangerStyle.Render("REQUIREMENT: operation scrutiny 25+")+"\n")
+	} else if level>=spec.MaxLevel {
+		right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
+	} else {
+		cost:=spec.Cost*int64(level+1)
+		right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n\n")
+		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE MODULE")+"\n")
+	}
+	right.WriteString("\n"+labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),lipgloss.NewStyle().Width(max(20,l.Width-leftWidth-5)).PaddingLeft(1).Render(right.String())))
+	return b.String()
+}
+
+func (a *App) rackPanel(l uiLayout) string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("MAIN  /  HARDWARE RACK")+"\n")
+	installed := a.installedModules()
+	b.WriteString(labelStyle.Render(fmt.Sprintf("BAYS IN USE: %d  ·  RACK CAPACITY: UNLIMITED",len(installed)))+"\n")
+	leftWidth := max(24,min(38,l.Width/3))
+	visibleLeft := 5
+	visibleRight := max(2,min(4,(l.Height-16)/6))
+	var left,right strings.Builder
+	left.WriteString(titleStyle.Render("AVAILABLE MODULES")+"\n")
+	start := a.trackLeftScroll
+	end := min(len(game.ModuleCatalog),start+visibleLeft)
+	if start>0 { left.WriteString(labelStyle.Render("  ▲ MORE ABOVE")+"\n") }
+	for i:=start;i<end;i++ {
+		spec:=game.ModuleCatalog[i]
+		m:=a.state.Module(spec.ID)
+		status:="NEW"
+		if m!=nil && m.Installed { status=fmt.Sprintf("REV %d INSTALLED",m.Level) }
+		if spec.ID=="obfuscation" && a.state.Risk<25 { status="LOCKED" }
+		name:=truncate(fmt.Sprintf("%s %s",map[bool]string{true:"›",false:" "}[i==a.selectedUpgrade],spec.Name),leftWidth-2)
+		style:=lipgloss.NewStyle().Foreground(lipgloss.Color("#080808")).Background(lipgloss.Color(spec.Color)).Padding(0,1)
+		if i!=a.selectedUpgrade { style=style.Faint(true) }
+		left.WriteString(style.Render(name)+"\n")
+		left.WriteString(labelStyle.Render("  "+status)+"\n")
+	}
+	if end<len(game.ModuleCatalog) { left.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
+	left.WriteString("\n"+labelStyle.Render("←/→ FOCUS · ↑/↓ SCROLL")+"\n")
+	right.WriteString(titleStyle.Render("INSTALLED RACK")+"\n")
+	if len(installed)==0 { right.WriteString(labelStyle.Render("No modules installed.")+"\n") }
+	startR:=a.trackRightScroll
+	endR:=min(len(installed),startR+visibleRight)
+	if startR>0 { right.WriteString(labelStyle.Render("  ▲ MORE ABOVE")+"\n") }
+	for i:=startR;i<endR;i++ {
+		m:=installed[i]
+		name:=m.ID
+		color:=teal
+		for _,spec:=range game.ModuleCatalog { if spec.ID==m.ID { name=spec.Name; color=lipgloss.Color(spec.Color); break } }
+		if m.ID=="legacy_controller" { name="LEGACY PRINT CONTROLLER"; color=orange }
+		stateLabel:=fmt.Sprintf("REVISION %02d",m.Level)
+		if m.Jammed { stateLabel="JAMMED · SPECIALIST REMOVAL" }
+		blockWidth:=max(18,min(l.Width-leftWidth-8,38))
+		block:=[]string{"┌"+strings.Repeat("─",blockWidth-2)+"┐","│ "+truncate(name,blockWidth-4)+strings.Repeat(" ",max(0,blockWidth-4-lipgloss.Width(truncate(name,blockWidth-4))))+" │","│ "+truncate(stateLabel,blockWidth-4)+strings.Repeat(" ",max(0,blockWidth-4-lipgloss.Width(truncate(stateLabel,blockWidth-4))))+" │"}
+		flicker:="*  *  *  *  *  *"
+		if a.uiFrame%7<3 { flicker="* *   *  * *  *" }
+		block=append(block,"│ "+truncate(flicker,blockWidth-4)+strings.Repeat(" ",max(0,blockWidth-4-lipgloss.Width(truncate(flicker,blockWidth-4))))+" │","└"+strings.Repeat("─",blockWidth-2)+"┘")
+		st:=lipgloss.NewStyle().Foreground(color)
+		if i==a.selectedRackModule && a.rackFocusRight { st=st.Bold(true) }
+		right.WriteString(st.Render(strings.Join(block,"\n"))+"\n")
+		if m.Jammed { right.WriteString(dangerStyle.Render("  Removal estimate: $50.00")+"\n") }
+	}
+	if endR<len(installed) { right.WriteString(labelStyle.Render("  ▼ MORE BELOW")+"\n") }
+	right.WriteString("\n"+labelStyle.Render("ENTER: acquire/remove · [U] UPGRADES · [B] BACK")+"\n")
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,lipgloss.NewStyle().Width(leftWidth).PaddingRight(1).Render(left.String()),lipgloss.NewStyle().Width(max(22,l.Width-leftWidth-5)).PaddingLeft(1).Render(right.String())))
 	return b.String()
 }
 
