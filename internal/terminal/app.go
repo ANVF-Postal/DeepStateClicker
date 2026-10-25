@@ -252,7 +252,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				leftWidth := max(28,min(38,a.layout().Width/3))
 				if x < leftWidth+5 {
 					for i,spec := range game.ModuleCatalog { if strings.Contains(line,spec.Name) { a.selectedUpgrade=i; return nil } }
-				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE MODULE") || mouseWithin(line,x,"[ENTER / B] REINSTALL MODULE") {
+				} else if mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE") || mouseWithin(line,x,"[ENTER / B] REINSTALL") {
 					return a.handleGameKey("b")
 				}
 			}
@@ -279,7 +279,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			case strings.Contains(line, "[R] HARDWARE RACK") && a.hasPurchasedModule(): a.mainView = "rack"; a.rackFocusRight = false
 			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED") && mouseWithin(line,x,"[ENTER] ACQUIRE / REMOVE SELECTED"): a.activateMainSelection()
 			case strings.Contains(line, "[B] BACK TO OPERATIONS"): a.mainView = "print"
-			case a.mainView == "upgrades" && mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE MODULE"): a.activateMainSelection()
+			case a.mainView == "upgrades" && mouseWithin(line,x,"[ENTER / B] BUY / UPGRADE"): a.activateMainSelection()
 			case a.mainView == "rack" && (strings.Contains(line, "AVAILABLE MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = x > lWidthForRack(a.width)
 			}
@@ -698,13 +698,13 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		cost := spec.Cost*int64(level+1)
 		if level >= spec.MaxLevel { right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
 		} else { right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(cost))+"\n") }
-		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE MODULE")+"\n")
+		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n")
 	} else if m!=nil && m.Level>0 {
 		right.WriteString(labelStyle.Render("MODULE REMOVED FROM RACK")+"\n")
-		right.WriteString(selectedStyle.Render("[ENTER / B] REINSTALL MODULE")+"\n")
+		right.WriteString(selectedStyle.Render("[ENTER / B] REINSTALL")+"\n")
 	} else {
 		right.WriteString(labelStyle.Render("ACQUISITION COST: $"+money(spec.Cost))+"\n")
-		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE MODULE")+"\n")
+		right.WriteString(selectedStyle.Render("[ENTER / B] BUY / UPGRADE")+"\n")
 	}
 	right.WriteString(labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
 	leftPane := windowPane("MODULE CATALOG", left.String(), leftWidth)
