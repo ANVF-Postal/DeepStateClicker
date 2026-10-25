@@ -262,9 +262,9 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 				}
 			}
 			if a.mainView == "rack" {
-				leftWidth, _ := paneWidths(a.layout())
+				leftWidth, rightWidth := paneWidths(a.layout())
 				leftPaneHit := x >= 2 && x < 2+leftWidth
-				rightPaneLine := visiblePaneText(line, 3+leftWidth, a.layout().Width-leftWidth-7)
+				rightPaneLine := visiblePaneText(line, 3+leftWidth, rightWidth)
 				if !leftPaneHit && mouseWithin(line,x,"[X]") {
 					for i, mod := range a.installedModules() {
 						name := mod.ID
