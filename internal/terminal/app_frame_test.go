@@ -464,6 +464,32 @@ func TestModuleBootStatusTransitionMovesBarAndHasIndependentDwell(t *testing.T) 
 	}
 }
 
+
+func TestModuleBootStatusSequenceHasFourToEightUniqueMessages(t *testing.T) {
+	for seedValue := uint64(1); seedValue <= 200; seedValue++ {
+		seed := seedValue
+		messages := chooseBootStatusSequence(&seed)
+		if len(messages) < 4 || len(messages) > 8 {
+			t.Fatalf("seed %d produced %d messages, want 4–8", seedValue, len(messages))
+		}
+		seen := make(map[string]bool, len(messages))
+		for _, message := range messages {
+			if seen[message] { t.Fatalf("seed %d repeated status %q", seedValue, message) }
+			seen[message] = true
+		}
+	}
+}
+
+func TestModuleBootPhaseDelayCannotExceed1600Milliseconds(t *testing.T) {
+	for seedValue := uint64(1); seedValue <= 200; seedValue++ {
+		seed := seedValue
+		delay := randomBootPhaseDelay(&seed)
+		if delay < 700*time.Millisecond || delay > 1600*time.Millisecond {
+			t.Fatalf("seed %d produced phase delay %s outside 700ms–1.6s", seedValue, delay)
+		}
+	}
+}
+
 func TestModuleBootCompletesOnlyWhenDynamicBarFinishes(t *testing.T) {
 	start := time.Unix(300, 0)
 	app := New(game.NewState(start))
@@ -473,6 +499,7 @@ func TestModuleBootCompletesOnlyWhenDynamicBarFinishes(t *testing.T) {
 	m := app.state.Module("window_expansion")
 	visual := app.ensureModuleBootAnimation(*m, start)
 	visual.progress = 99
+	visual.statusIndex = len(visual.statusMessages)-1
 	visual.nextProgressAt = start.Add(time.Hour)
 	visual.nextStatusAt = start
 
