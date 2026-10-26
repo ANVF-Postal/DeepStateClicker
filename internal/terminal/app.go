@@ -1440,7 +1440,7 @@ func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int6
 			"│"+padCells(" "+truncate(name, max(1,inner-1)), "", inner)+"│",
 			"│"+padCells(" JAMMED - SPECIALIST REMOVAL", "", inner)+"│",
 			"│"+strings.Repeat(" ", inner)+"│",
-			"│"+padCells("", button, inner-1)+orangeRackStyle(false).Render("│"),
+			"│"+padCells("", button, inner)+orangeRackStyle(false).Render("│"),
 			"└"+strings.Repeat("─", inner)+"┘",
 		}
 	}
