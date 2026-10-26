@@ -787,14 +787,14 @@ func TestRackPaneOmitsRedundantControlFooter(t *testing.T) {
 }
 
 
-func TestCapacityBarUsesSolidFillAndLightEmptyTrack(t *testing.T) {
-	if got, want := capacityUtilizationBar(2, 5), "━━───"; got != want {
+func TestCapacityBarUsesLightLineFillAndBlankEmptyTrack(t *testing.T) {
+	if got, want := capacityUtilizationBar(2, 5), "──   "; got != want {
 		t.Fatalf("partially filled capacity bar = %q, want %q", got, want)
 	}
-	if got, want := capacityUtilizationBar(5, 5), "━━━━━"; got != want {
+	if got, want := capacityUtilizationBar(5, 5), "─────"; got != want {
 		t.Fatalf("full capacity bar = %q, want %q", got, want)
 	}
-	if got, want := capacityUtilizationBar(0, 5), "─────"; got != want {
+	if got, want := capacityUtilizationBar(0, 5), "     "; got != want {
 		t.Fatalf("empty capacity bar = %q, want %q", got, want)
 	}
 }
