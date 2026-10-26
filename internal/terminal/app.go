@@ -1165,9 +1165,7 @@ func (a *App) upgradesPanel(l uiLayout) string {
 	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d", level, spec.MaxLevel))+"\n")
 	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5", spec.Suspicion))+"\n")
 	canUpgrade := level < spec.MaxLevel && !(spec.ID == "obfuscation" && a.state.Risk < 25)
-	if spec.ID == "obfuscation" && a.state.Risk < 25 {
-		right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
-	} else if level >= spec.MaxLevel {
+	if level >= spec.MaxLevel {
 		if installed {
 			right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
 		} else {
@@ -1181,7 +1179,9 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		costColor := red
 		if a.state.CashOnHand >= cost { costColor = green }
 		right.WriteString(labelStyle.Render(costLabel)+lipgloss.NewStyle().Foreground(costColor).Bold(true).Render("$"+money(cost))+"\n")
-		if level > 0 {
+		if spec.ID == "obfuscation" && a.state.Risk < 25 {
+			right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
+		} else if level > 0 {
 			if !installed {
 				right.WriteString(okStyle.Render("READY FOR INSTALLATION IN HARDWARE RACK")+"\n")
 			} else {
