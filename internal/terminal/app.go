@@ -160,14 +160,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The end marker reports whether the player injected, automation injected,
 			// or the opportunity was missed entirely.
 			if a.state.Batch.Progress >= game.BatchCycleTicks-1 {
-				switch {
-				case a.state.Batch.PlayerQueuedDollars > 0:
-					a.printerEndFlashColor = green
-				case a.state.Batch.QueuedDollars > 0:
-					a.printerEndFlashColor = amber
-				default:
-					a.printerEndFlashColor = muted
-				}
+				a.printerEndFlashColor = printerEndColor(a.state.Batch)
 				a.printerEndFlashUntil = now.Add(1100 * time.Millisecond)
 			}
 			a.state.Advance(now)
@@ -1016,6 +1009,17 @@ func printerProgressBar(filled, width int) string {
 	width = max(0, width)
 	filled = min(width, max(0, filled))
 	return strings.Repeat("━", filled) + strings.Repeat("┄", width-filled)
+}
+
+func printerEndColor(batch game.BatchState) lipgloss.Color {
+	switch {
+	case batch.PlayerQueuedDollars > 0:
+		return green
+	case batch.QueuedDollars > 0:
+		return amber
+	default:
+		return muted
+	}
 }
 
 func (a *App) cashPanelView(width int) string {
