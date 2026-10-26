@@ -16,10 +16,12 @@ func TestExploitOnlyQueuesDuringWindowAndCashArrivesAtBatchCompletion(t *testing
 	if !s.Batch.WindowOpen { t.Fatal("expected exploit window to be open") }
 	before := s.CashOnHand
 	if err := s.QueueExploit(now); err != nil { t.Fatalf("queue exploit: %v", err) }
+	if s.Batch.PlayerQueuedDollars != 1 { t.Fatalf("player injection should be tracked separately, got %d", s.Batch.PlayerQueuedDollars) }
 	if s.CashOnHand != before { t.Fatal("cash must not arrive when instruction is queued") }
 	for s.Batch.Number == 1 { s.Advance(now.Add(time.Duration(s.Tick+1)*time.Second)) }
 	if s.CashOnHand != before+PrintAmount { t.Fatalf("expected cash after batch completion, got %d",s.CashOnHand) }
 	if s.TotalPrinted != PrintAmount { t.Fatalf("expected total printed to increase at completion, got %d",s.TotalPrinted) }
+	if s.Batch.PlayerQueuedDollars != 0 { t.Fatalf("player queue attribution should reset for the next batch, got %d", s.Batch.PlayerQueuedDollars) }
 }
 
 func TestMissedWindowDoesNotQueueMoney(t *testing.T) {
@@ -43,6 +45,7 @@ func TestAutomationQueuesButDoesNotInstantlyPay(t *testing.T) {
 	before:=s.CashOnHand
 	for i:=0;i<ExploitWindowStart;i++ { s.Advance(time.Unix(int64(i+3),0)) }
 	if s.Batch.QueuedDollars!=1 { t.Fatalf("automation should queue one instruction, got %d",s.Batch.QueuedDollars) }
+	if s.Batch.PlayerQueuedDollars != 0 { t.Fatalf("automatic injection must not count as player input, got %d", s.Batch.PlayerQueuedDollars) }
 	if s.CashOnHand!=before { t.Fatal("automation must not pay before batch completion") }
 	for s.Batch.Number==1 { s.Advance(time.Unix(int64(s.Tick+10),0)) }
 	if s.CashOnHand!=before+PrintAmount { t.Fatalf("expected cash on completion, got %d",s.CashOnHand) }
