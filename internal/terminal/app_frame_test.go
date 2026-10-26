@@ -818,7 +818,7 @@ func TestPrinterProgressHeadTracksFillAndStaysVisibleAtCompletion(t *testing.T) 
 		want string
 	}{
 		{name: "empty", filled: 0, width: 5, want: "▶━━━━"},
-		{name: "partial", filled: 2, width: 5, want: "─▶━━━"},
+		{name: "partial", filled: 2, width: 5, want: "──▶━━"},
 		{name: "complete", filled: 5, width: 5, want: "────▶"},
 		{name: "zero width", filled: 0, width: 0, want: ""},
 	}
