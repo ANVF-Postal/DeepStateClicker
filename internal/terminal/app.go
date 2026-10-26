@@ -32,6 +32,32 @@ type uiLayout struct {
 	SideBySide bool
 }
 
+type moduleLEDAnimation struct {
+	on            bool
+	nextToggleAt  time.Time
+	random        uint64
+}
+
+type moduleBootAnimation struct {
+	startedAt       time.Time
+	duration        time.Duration
+	progress        int
+	statusIndex     int
+	nextProgressAt  time.Time
+	nextStatusAt    time.Time
+	progressRandom  uint64
+	statusRandom    uint64
+}
+
+var bootStatusMessages = []string{
+	"BUS ENUMERATION IN PROGRESS",
+	"FIRMWARE SIGNATURE VERIFIED",
+	"CALIBRATING TIMING BUS",
+	"LOADING CONTROL ROUTINES",
+	"RUNNING INTEGRITY CHECK",
+	"FINALIZING MODULE HANDSHAKE",
+}
+
 type App struct {
 	state game.State
 	screen screen
@@ -39,8 +65,9 @@ type App struct {
 	menu int
 	message string
 	uiFrame int64
-	diskFrame int64
 	newsHeadline string
+	moduleLEDs map[string]*moduleLEDAnimation
+	moduleBoots map[string]*moduleBootAnimation
 	newsStartedAt time.Time
 	injectFlashUntil time.Time
 	injectMouseHeld bool
@@ -61,7 +88,11 @@ type App struct {
 func New(state game.State) *App {
 	state.Normalize()
 	if state.CurrentTab == game.TabStore { state.CurrentTab = game.TabPrint }
-	return &App{state: state, screen: screenMenu, width: 80, height: 24}
+	return &App{
+		state: state, screen: screenMenu, width: 80, height: 24,
+		moduleLEDs: make(map[string]*moduleLEDAnimation),
+		moduleBoots: make(map[string]*moduleBootAnimation),
+	}
 }
 func (a *App) Run() error {
 	_, err := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -111,7 +142,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uiPulseMsg:
 		if a.screen == screenGame {
 			a.uiFrame++
-			a.diskFrame++
+			// Hardware animations only advance while their rack panel is visible.
+			// The game simulation still advances on its separate one-second tick.
+			if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
+				a.advanceRackAnimations(time.Now())
+			}
 			return a, uiPulse()
 		}
 	case tea.KeyMsg:
@@ -836,6 +871,9 @@ func (a *App) installRackModule(id string, now time.Time) {
 		}
 	}
 	a.message = name+" inserted. Initialization sequence started."
+	if installed := a.state.Module(id); installed != nil && installed.Booting {
+		a.ensureModuleBootAnimation(*installed, now)
+	}
 	a.rackFocusRight = true
 	a.selectRackModule(id)
 }
@@ -868,14 +906,6 @@ func moduleGain(id string, level int) string {
 	case "obfuscation": return "NO ACTIVE EFFECT"
 	default: return "SYSTEM HARDWARE"
 	}
-}
-
-func bootMessage(m game.ModuleState) string {
-	elapsed := m.BootTicksTotal-m.BootTicksRemaining
-	messages := []string{"BUS ENUMERATION IN PROGRESS", "FIRMWARE SIGNATURE VERIFIED", "CALIBRATING TIMING BUS", "LOADING CONTROL ROUTINES", "RUNNING INTEGRITY CHECK", "FINALIZING MODULE HANDSHAKE"}
-	if elapsed < 0 { elapsed = 0 }
-	idx := min(len(messages)-1, elapsed*len(messages)/max(1,m.BootTicksTotal))
-	return messages[idx]
 }
 
 func (a *App) gameView() string {
@@ -1185,7 +1215,13 @@ func (a *App) rackPanel(l uiLayout) string {
 				}
 			}
 			selected := i == a.selectedRackModule && a.rackFocusRight
-			card = rackModuleCard(*m, name, cardInner, a.state.JammedLegacyRemovalCost(), a.rackRemovalArmedModule == m.ID, a.uiFrame, a.diskFrame)
+			animationNow := time.Now()
+			bootProgress, bootStatus := 0, ""
+			if m.Booting {
+				bootProgress, bootStatus = a.moduleBootDisplay(*m, animationNow)
+			}
+			ledOn := !m.Jammed && !m.Booting && !m.ActivatedFlash && a.moduleLEDOn(m.ID, animationNow)
+			card = rackModuleCard(*m, name, cardInner, a.state.JammedLegacyRemovalCost(), a.rackRemovalArmedModule == m.ID, a.uiFrame, bootProgress, bootStatus, ledOn)
 			for row := range card {
 				paddedLine := strings.Repeat(" ", cardPad)+card[row]+strings.Repeat(" ", max(0, contentWidth-cardPad-lipgloss.Width(card[row])))
 				if m.Jammed {
@@ -1211,10 +1247,160 @@ func (a *App) rackPanel(l uiLayout) string {
 	return out.String()
 }
 
+
+// visualSeed creates separate, repeatable random streams for each module visual.
+func visualSeed(id string, now time.Time) uint64 {
+	seed := uint64(now.UnixNano()) ^ uint64(0x9e3779b97f4a7c15)
+	for _, b := range []byte(id) {
+		seed ^= uint64(b)
+		seed *= uint64(0x100000001b3)
+	}
+	if seed == 0 { return uint64(0x2545f4914f6cdd1d) }
+	return seed
+}
+
+func nextVisualRandom(seed *uint64) uint64 {
+	x := *seed
+	x ^= x << 13
+	x ^= x >> 7
+	x ^= x << 17
+	if x == 0 { x = uint64(0x2545f4914f6cdd1d) }
+	*seed = x
+	return x
+}
+
+func randomVisualDelay(seed *uint64, minDelay, maxDelay time.Duration) time.Duration {
+	if maxDelay <= minDelay { return minDelay }
+	const step = 100 * time.Millisecond
+	steps := int64((maxDelay-minDelay)/step) + 1
+	return minDelay + time.Duration(nextVisualRandom(seed)%uint64(steps))*step
+}
+
+func moduleColorForID(id string) lipgloss.Color {
+	for _, spec := range game.ModuleCatalog {
+		if spec.ID == id { return lipgloss.Color(spec.Color) }
+	}
+	return teal
+}
+
+func (a *App) ensureModuleLED(id string, now time.Time) *moduleLEDAnimation {
+	if a.moduleLEDs == nil { a.moduleLEDs = make(map[string]*moduleLEDAnimation) }
+	if animation := a.moduleLEDs[id]; animation != nil { return animation }
+	seed := visualSeed(id, now)
+	animation := &moduleLEDAnimation{random: seed}
+	animation.nextToggleAt = now.Add(randomVisualDelay(&animation.random, 100*time.Millisecond, 400*time.Millisecond))
+	a.moduleLEDs[id] = animation
+	return animation
+}
+
+func (a *App) moduleLEDOn(id string, now time.Time) bool {
+	return a.ensureModuleLED(id, now).on
+}
+
+func (a *App) ensureModuleBootAnimation(m game.ModuleState, now time.Time) *moduleBootAnimation {
+	if a.moduleBoots == nil { a.moduleBoots = make(map[string]*moduleBootAnimation) }
+	if animation := a.moduleBoots[m.ID]; animation != nil { return animation }
+
+	totalTicks := max(1, m.BootTicksTotal)
+	elapsedTicks := max(0, m.BootTicksTotal-m.BootTicksRemaining)
+	elapsedTicks = min(totalTicks, elapsedTicks)
+	seed := visualSeed(m.ID, now)
+	progressRandom := seed ^ uint64(0xa0761d6478bd642f)
+	statusRandom := seed ^ uint64(0xe7037ed1a0b428db)
+	statusIndex := int(nextVisualRandom(&statusRandom) % uint64(len(bootStatusMessages)))
+	animation := &moduleBootAnimation{
+		startedAt: now.Add(-time.Duration(elapsedTicks)*time.Second),
+		duration: time.Duration(totalTicks)*time.Second,
+		progress: min(99, elapsedTicks*100/totalTicks),
+		statusIndex: statusIndex,
+		progressRandom: progressRandom,
+		statusRandom: statusRandom,
+	}
+	animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 80*time.Millisecond, 480*time.Millisecond))
+	animation.nextStatusAt = now.Add(randomVisualDelay(&animation.statusRandom, 800*time.Millisecond, 2400*time.Millisecond))
+	a.moduleBoots[m.ID] = animation
+	return animation
+}
+
+func (a *App) moduleBootDisplay(m game.ModuleState, now time.Time) (int, string) {
+	animation := a.ensureModuleBootAnimation(m, now)
+	statusIndex := min(len(bootStatusMessages)-1, max(0, animation.statusIndex))
+	return animation.progress, bootStatusMessages[statusIndex]
+}
+
+func (a *App) advanceRackAnimations(now time.Time) {
+	for i := range a.state.Modules {
+		m := &a.state.Modules[i]
+		if !m.Installed || m.Jammed {
+			delete(a.moduleLEDs, m.ID)
+			delete(a.moduleBoots, m.ID)
+			continue
+		}
+		if m.Booting {
+			animation := a.ensureModuleBootAnimation(*m, now)
+			elapsed := now.Sub(animation.startedAt)
+			if elapsed < 0 { elapsed = 0 }
+			baseProgress := 0
+			if animation.duration > 0 {
+				baseProgress = min(100, int(elapsed*100/animation.duration))
+			}
+			// Let the bar drift a little ahead of elapsed time, then pause until
+			// the real boot clock catches up. It cannot finish before the module.
+			progressCeiling := min(99, baseProgress+12)
+			if !now.Before(animation.nextProgressAt) {
+				roll := nextVisualRandom(&animation.progressRandom) % 10
+				step := 0
+				switch {
+				case roll < 4:
+					step = 0 // occasionally hold perfectly still
+				case roll < 8:
+					step = 1 // a small, cautious increment
+				case roll == 8:
+					step = 3 // a quick jump
+				default:
+					step = 6 // a sudden burst forward
+				}
+				animation.progress = min(progressCeiling, animation.progress+step)
+				animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 80*time.Millisecond, 480*time.Millisecond))
+			}
+			// Status changes follow their own timer and random stream. Several
+			// bar movements can occur between firmware messages, or vice versa.
+			if !now.Before(animation.nextStatusAt) {
+				previous := animation.statusIndex
+				animation.statusIndex = int(nextVisualRandom(&animation.statusRandom) % uint64(len(bootStatusMessages)))
+				if animation.statusIndex == previous {
+					animation.statusIndex = (animation.statusIndex+1) % len(bootStatusMessages)
+				}
+				animation.nextStatusAt = now.Add(randomVisualDelay(&animation.statusRandom, 800*time.Millisecond, 2400*time.Millisecond))
+			}
+			delete(a.moduleLEDs, m.ID)
+			continue
+		}
+
+		delete(a.moduleBoots, m.ID)
+		if m.ActivatedFlash { continue }
+		led := a.ensureModuleLED(m.ID, now)
+		if now.Before(led.nextToggleAt) { continue }
+		led.on = !led.on
+		if led.on {
+			// Real drive activity tends to be a short pulse.
+			led.nextToggleAt = now.Add(randomVisualDelay(&led.random, 100*time.Millisecond, 200*time.Millisecond))
+		} else {
+			// Quiet gaps vary; occasional longer pauses make each module feel busy
+			// on its own schedule rather than like a synchronized dashboard light.
+			pause := randomVisualDelay(&led.random, 100*time.Millisecond, 500*time.Millisecond)
+			if nextVisualRandom(&led.random)%4 == 0 {
+				pause += randomVisualDelay(&led.random, 300*time.Millisecond, 800*time.Millisecond)
+			}
+			led.nextToggleAt = now.Add(pause)
+		}
+	}
+}
+
 // rackModuleCard returns a six-row hardware face regardless of boot state.
 // Its title sits inside the enclosure; the boot bar is replaced by an HDD-style
 // status LED once initialization finishes, keeping the bay dimensions stable.
-func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int64, removalArmed bool, frame, diskFrame int64) []string {
+func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int64, removalArmed bool, frame int64, bootProgress int, bootStatus string, ledOn bool) []string {
 	top := "┌"+strings.Repeat("─", inner)+"┐"
 	if m.Jammed {
 		button := fmt.Sprintf("$%d - [REMOVE]", removalCost/100)
@@ -1237,7 +1423,8 @@ func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int6
 	revLine := "│"+padCells(fmt.Sprintf(" REV %02d", m.Level), moduleGain(m.ID, m.Level), inner)+"│"
 	statusLine := ""
 	if m.Booting {
-		statusLine = "│"+padCells(" "+bootMessage(m), "", inner)+"│"
+		if bootStatus == "" { bootStatus = bootStatusMessages[0] }
+		statusLine = "│"+padCells(" "+bootStatus, "", inner)+"│"
 	} else if m.ActivatedFlash {
 		statusLine = "│"+padCells(" ACTIVATED!", "", inner)+"│"
 	} else {
@@ -1249,18 +1436,21 @@ func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int6
 	switch {
 	case m.Booting:
 		barWidth := max(1, inner-3)
-		done := m.BootTicksTotal-m.BootTicksRemaining
-		filled := min(barWidth, max(0, done*barWidth/max(1,m.BootTicksTotal)))
+		percent := min(99, max(0, bootProgress))
+		filled := min(barWidth, max(0, percent*barWidth/100))
 		activityLine = "│"+padCells(" ["+strings.Repeat("█",filled)+strings.Repeat("·",barWidth-filled)+"]", "", inner)+"│"
 	case m.ActivatedFlash:
 		barWidth := max(1, inner-3)
 		activityLine = "│"+padCells(" ["+strings.Repeat("█",barWidth)+"]", "", inner)+"│"
 	default:
 		led := labelStyle.Render(".")
-		if diskFrame%13 < 4 {
+		if ledOn {
 			led = okStyle.Render(".")
 		}
-		activityLine = "│"+strings.Repeat(" ", max(0,inner-1))+led+"│"
+		// Rendering the LED injects its own ANSI reset. Reapply the hardware
+		// color to the trailing enclosure edge so it never falls back to grey.
+		rightEdge := lipgloss.NewStyle().Foreground(moduleColorForID(m.ID)).Render("│")
+		activityLine = "│"+strings.Repeat(" ", max(0,inner-1))+led+rightEdge
 	}
 	return []string{top, title, revLine, statusLine, activityLine, "└"+strings.Repeat("─",inner)+"┘"}
 }
