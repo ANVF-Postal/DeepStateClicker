@@ -1353,7 +1353,7 @@ func chooseBootProgressMilestones(seed *uint64, phaseCount int) []int {
 	switch int(nextVisualRandom(seed) % 3) {
 	case 0:
 		// Early launch: the opening barely moves, then the bar leaps forward.
-		upper := min(84, finalTarget-3*(phaseCount-2))
+		upper := min(92, finalTarget-3*(phaseCount-2))
 		milestones[1] = randomInt(52, upper)
 		fillGradual(2)
 
@@ -1366,7 +1366,7 @@ func chooseBootProgressMilestones(seed *uint64, phaseCount int) []int {
 		}
 		previous := milestones[surgeIndex-1]
 		lower := max(52, previous+15)
-		upper := min(86, finalTarget-3*(phaseCount-1-surgeIndex))
+		upper := min(92, finalTarget-3*(phaseCount-1-surgeIndex))
 		milestones[surgeIndex] = randomInt(lower, upper)
 		fillGradual(surgeIndex + 1)
 
