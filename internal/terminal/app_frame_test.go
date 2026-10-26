@@ -811,15 +811,34 @@ func TestPrinterBarUsesDashedTrackAndSolidFill(t *testing.T) {
 	}
 }
 
-func TestPrinterEndColorReflectsWhoQueuedThePrint(t *testing.T) {
+func TestPrinterDollarColorOnlyRespondsToPlayerInjection(t *testing.T) {
 	cases := []struct {
 		name string
 		batch game.BatchState
 		want lipgloss.Color
 	}{
-		{name: "missed run stays grey", batch: game.BatchState{}, want: muted},
+		{name: "missed run stays grey", batch: game.BatchState{}, want: printerTrackColor},
+		{name: "automatic injection does not recolor marker", batch: game.BatchState{QueuedDollars: 2}, want: printerTrackColor},
+		{name: "player injection turns marker yellow", batch: game.BatchState{QueuedDollars: 2, PlayerQueuedDollars: 1}, want: amber},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := printerDollarColor(tc.batch); got != tc.want {
+				t.Fatalf("printer dollar color = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrinterEndFlashColorReflectsWhoQueuedThePrint(t *testing.T) {
+	cases := []struct {
+		name string
+		batch game.BatchState
+		want lipgloss.Color
+	}{
+		{name: "missed run stays grey", batch: game.BatchState{}, want: printerTrackColor},
 		{name: "automatic injection flashes yellow at cycle end", batch: game.BatchState{QueuedDollars: 2}, want: amber},
-		{name: "player injection turns marker yellow", batch: game.BatchState{QueuedDollars: 2, PlayerQueuedDollars: 1}, want: green},
+		{name: "player injection flashes green at cycle end", batch: game.BatchState{QueuedDollars: 2, PlayerQueuedDollars: 1}, want: green},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
