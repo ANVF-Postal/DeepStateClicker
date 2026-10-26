@@ -107,6 +107,60 @@ func TestUpgradeCatalogueOmitsAvailableStatusColumn(t *testing.T) {
 	}
 }
 
+
+func TestUpgradeDetailsUseSpacedColoredHeaderAndBottomAnchoredFooter(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "upgrades"
+
+	view := app.upgradesPanel(app.layout())
+	lines := plainViewLines(view)
+	headerY, header := rackLine(t, app, "WINDOW EXPANSION")
+	if !strings.Contains(header, "WINDOW EXPANSION") {
+		t.Fatal("selected upgrade name should appear in the details pane")
+	}
+	if headerY+1 >= len(lines) || !strings.Contains(lines[headerY+1], "----------------") {
+		t.Fatal("upgrade title should have a matching hyphen underline")
+	}
+	if headerY+2 >= len(lines) || strings.TrimSpace(lines[headerY+2]) != "" {
+		t.Fatal("upgrade description should be separated from the title by a blank line")
+	}
+	if !strings.Contains(view, "Extends the injection opportunity by one active second per revision.") {
+		t.Fatal("upgrade description should remain visible")
+	}
+	if !strings.Contains(view, "CURRENT REVISION: 00 / 03") || !strings.Contains(view, "SUSPICION PROFILE: 1 / 5") {
+		t.Fatal("revision and suspicion information should be grouped in the details pane")
+	}
+	if !strings.Contains(view, "[UPGRADE]") {
+		t.Fatal("purchase control should use the concise UPGRADE label")
+	}
+	if !strings.Contains(lines[len(lines)-2], "[R] HARDWARE RACK") {
+		t.Fatalf("navigation hint should be anchored at the bottom of the right pane, got %q", lines[len(lines)-2])
+	}
+}
+
+func TestUpgradeAcquisitionCostReflectsAffordability(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "upgrades"
+
+	app.state.CashOnHand = 100_000
+	view := app.upgradesPanel(app.layout())
+	if !strings.Contains(view, lipgloss.NewStyle().Foreground(green).Bold(true).Render("$25.00")) {
+		t.Fatal("affordable acquisition cost should be highlighted in green")
+	}
+
+	app.state.CashOnHand = 0
+	view = app.upgradesPanel(app.layout())
+	if !strings.Contains(view, lipgloss.NewStyle().Foreground(red).Bold(true).Render("$25.00")) {
+		t.Fatal("unaffordable acquisition cost should be highlighted in red")
+	}
+}
+
 func TestUppercaseRackShortcutAndMainRackClick(t *testing.T) {
 	app := New(game.NewState(time.Now()))
 	app.width, app.height = 100, 31
@@ -182,14 +236,14 @@ func TestUpgradeBuyButtonRequiresSecondClick(t *testing.T) {
 	app.mainView = "upgrades"
 	app.selectedUpgrade = 0
 
-	y, line := rackLine(t, app, "[ENTER / B] BUY / UPGRADE")
-	x := cellOffset(line, "[ENTER / B] BUY / UPGRADE")
+	y, line := rackLine(t, app, "[UPGRADE]")
+	x := cellOffset(line, "[UPGRADE]")
 	app.handleMouse(x, y)
 	if app.state.Module("window_expansion") != nil {
 		t.Fatal("first click should only arm the purchase")
 	}
-	y, line = rackLine(t, app, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
-	x = cellOffset(line, "[CONFIRM] CLICK BUY / UPGRADE AGAIN")
+	y, line = rackLine(t, app, "[CONFIRM UPGRADE]")
+	x = cellOffset(line, "[CONFIRM UPGRADE]")
 	app.handleMouse(x, y)
 	m := app.state.Module("window_expansion")
 	if m == nil || m.Level != 1 || m.Installed {
