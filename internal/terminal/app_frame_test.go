@@ -818,7 +818,7 @@ func TestPrinterEndColorReflectsWhoQueuedThePrint(t *testing.T) {
 		want lipgloss.Color
 	}{
 		{name: "missed run stays grey", batch: game.BatchState{}, want: muted},
-		{name: "automatic injection does not recolor during run", batch: game.BatchState{QueuedDollars: 2}, want: amber},
+		{name: "automatic injection flashes yellow at cycle end", batch: game.BatchState{QueuedDollars: 2}, want: amber},
 		{name: "player injection turns marker yellow", batch: game.BatchState{QueuedDollars: 2, PlayerQueuedDollars: 1}, want: green},
 	}
 	for _, tc := range cases {
