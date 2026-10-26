@@ -787,26 +787,26 @@ func TestRackPaneOmitsRedundantControlFooter(t *testing.T) {
 }
 
 
-func TestCapacityBarUsesSolidFillAndBlankRemainder(t *testing.T) {
-	if got, want := capacityUtilizationBar(2, 5), "━━   "; got != want {
+func TestCapacityBarUsesSolidFillAndLightEmptyTrack(t *testing.T) {
+	if got, want := capacityUtilizationBar(2, 5), "━━───"; got != want {
 		t.Fatalf("partially filled capacity bar = %q, want %q", got, want)
 	}
 	if got, want := capacityUtilizationBar(5, 5), "━━━━━"; got != want {
 		t.Fatalf("full capacity bar = %q, want %q", got, want)
 	}
-	if got, want := capacityUtilizationBar(0, 5), "     "; got != want {
+	if got, want := capacityUtilizationBar(0, 5), "─────"; got != want {
 		t.Fatalf("empty capacity bar = %q, want %q", got, want)
 	}
 }
 
-func TestPrinterBarUsesDashedTrackAndSolidFill(t *testing.T) {
-	if got, want := printerProgressBar(2, 5), "━━---"; got != want {
+func TestPrinterBarUsesInvertedHeavyAndLightTracks(t *testing.T) {
+	if got, want := printerProgressBar(2, 5), "──━━━"; got != want {
 		t.Fatalf("partially filled printer bar = %q, want %q", got, want)
 	}
-	if got, want := printerProgressBar(5, 5), "━━━━━"; got != want {
+	if got, want := printerProgressBar(5, 5), "─────"; got != want {
 		t.Fatalf("full printer bar = %q, want %q", got, want)
 	}
-	if got, want := printerProgressBar(0, 5), "-----"; got != want {
+	if got, want := printerProgressBar(0, 5), "━━━━━"; got != want {
 		t.Fatalf("empty printer bar = %q, want %q", got, want)
 	}
 }
@@ -817,9 +817,9 @@ func TestPrinterProgressHeadTracksFillAndStaysVisibleAtCompletion(t *testing.T) 
 		filled, width int
 		want string
 	}{
-		{name: "empty", filled: 0, width: 5, want: "▶----"},
-		{name: "partial", filled: 2, width: 5, want: "━━▶--"},
-		{name: "complete", filled: 5, width: 5, want: "━━━━▶"},
+		{name: "empty", filled: 0, width: 5, want: "▶━━━━"},
+		{name: "partial", filled: 2, width: 5, want: "─▶━━━"},
+		{name: "complete", filled: 5, width: 5, want: "────▶"},
 		{name: "zero width", filled: 0, width: 0, want: ""},
 	}
 	for _, tc := range cases {
