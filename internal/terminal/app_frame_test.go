@@ -390,6 +390,10 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 				if !strings.Contains(plain, "$50 - [REMOVE]") {
 					t.Fatal("jammed legacy module should display the specialist removal control")
 				}
+				wantEdge := orangeRackStyle(false).Render("│")
+				if !strings.HasSuffix(lines[4], wantEdge) {
+					t.Fatalf("right enclosure edge beside [REMOVE] should retain the jammed module color: got %q, want styled suffix %q", lines[4], wantEdge)
+				}
 			}
 		})
 	}
@@ -424,12 +428,11 @@ func TestRackModuleLEDsUseIndependentBlinkSequences(t *testing.T) {
 	}
 }
 
-func TestModuleBootProgressAndStatusUseIndependentTimers(t *testing.T) {
+func TestModuleBootStatusTransitionMovesBarAndHasIndependentDwell(t *testing.T) {
 	start := time.Unix(200, 0)
 	app := New(game.NewState(start))
 	app.state.Modules = append(app.state.Modules, game.ModuleState{
 		ID: "window_expansion", Level: 1, Installed: true, Booting: true,
-		BootTicksTotal: 10, BootTicksRemaining: 10,
 	})
 	m := app.state.Module("window_expansion")
 	if m == nil { t.Fatal("missing window expansion module") }
@@ -438,29 +441,49 @@ func TestModuleBootProgressAndStatusUseIndependentTimers(t *testing.T) {
 	progressBefore, statusBefore := visual.progress, visual.statusIndex
 	visual.nextProgressAt = start.Add(time.Hour)
 	visual.nextStatusAt = start
-	app.advanceRackAnimations(start)
-	if visual.progress != progressBefore {
-		t.Fatalf("progress should hold while its own timer is waiting: before=%d after=%d", progressBefore, visual.progress)
-	}
+	app.advanceModuleBootAnimations(start)
 	if visual.statusIndex == statusBefore {
-		t.Fatal("firmware status should be able to change while the progress bar is stationary")
+		t.Fatal("firmware phase should change when its own dwell timer expires")
+	}
+	if visual.progress <= progressBefore {
+		t.Fatalf("status transition should visibly move the loading bar: before=%d after=%d", progressBefore, visual.progress)
 	}
 
 	statusWhileHeld := visual.statusIndex
+	progressBefore = visual.progress
 	visual.nextProgressAt = start
 	visual.nextStatusAt = start.Add(time.Hour)
 	for i := 1; i <= 50; i++ {
-		app.advanceRackAnimations(start.Add(time.Duration(i) * 100 * time.Millisecond))
+		app.advanceModuleBootAnimations(start.Add(time.Duration(i) * 100 * time.Millisecond))
 	}
 	if visual.progress <= progressBefore {
-		t.Fatalf("loading bar should advance independently of status text, progress stayed at %d", visual.progress)
+		t.Fatalf("the bar should also be able to creep independently during a phase, progress stayed at %d", visual.progress)
 	}
 	if visual.statusIndex != statusWhileHeld {
-		t.Fatal("firmware status changed even though its independent timer was held")
+		t.Fatal("firmware text changed even though its long phase dwell timer was held")
 	}
 }
 
+func TestModuleBootCompletesOnlyWhenDynamicBarFinishes(t *testing.T) {
+	start := time.Unix(300, 0)
+	app := New(game.NewState(start))
+	app.state.Modules = append(app.state.Modules, game.ModuleState{
+		ID: "window_expansion", Level: 1, Installed: true, Booting: true,
+	})
+	m := app.state.Module("window_expansion")
+	visual := app.ensureModuleBootAnimation(*m, start)
+	visual.progress = 95
+	visual.nextProgressAt = start.Add(time.Hour)
+	visual.nextStatusAt = start
 
+	app.advanceModuleBootAnimations(start)
+	if m.Booting { t.Fatal("phase transition should complete boot when it moves the bar to 100%") }
+	if !m.ActivatedFlash { t.Fatal("completed boot should display the activation flash") }
+	if got := moduleLevel(&app.state, "window_expansion"); got != 1 {
+		t.Fatalf("module effects should activate only after the animated bar completes, got level %d", got)
+	}
+	if visual.progress != 100 { t.Fatalf("completed bar should read 100%%, got %d%%", visual.progress) }
+}
 func TestRemovingLegacyControllerUnlocksOneBayAndEscalatesTheNextFee(t *testing.T) {
 	app := New(game.NewState(time.Unix(1, 0)))
 	before := app.rackBays()
