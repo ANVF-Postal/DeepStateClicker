@@ -88,6 +88,8 @@ type App struct {
 	moduleBoots map[string]*moduleBootAnimation
 	newsStartedAt time.Time
 	injectFlashUntil time.Time
+	printerEndFlashUntil time.Time
+	printerEndFlashColor lipgloss.Color
 	injectMouseHeld bool
 	injectHeldRed bool
 	mainView string
@@ -154,6 +156,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == screenGame {
 			previousNews := a.state.NewsIndex
 			now := time.Time(msg)
+			// Preserve one final rendered tick after the simulation resets the batch.
+			// The end marker reports whether the player injected, automation injected,
+			// or the opportunity was missed entirely.
+			if a.state.Batch.Progress >= game.BatchCycleTicks-1 {
+				switch {
+				case a.state.Batch.PlayerQueuedDollars > 0:
+					a.printerEndFlashColor = green
+				case a.state.Batch.QueuedDollars > 0:
+					a.printerEndFlashColor = amber
+				default:
+					a.printerEndFlashColor = muted
+				}
+				a.printerEndFlashUntil = now.Add(1100 * time.Millisecond)
+			}
 			a.state.Advance(now)
 			if a.state.NewsIndex != previousNews { a.startNewsDispatch() }
 			// When the rack is hidden, booting hardware still advances at the
@@ -988,6 +1004,20 @@ func (a *App) gameView() string {
 }
 
 
+func capacityUtilizationBar(filled, width int) string {
+	width = max(0, width)
+	filled = min(width, max(0, filled))
+	return strings.Repeat("━", filled) + strings.Repeat(" ", width-filled)
+}
+
+// printerProgressBar keeps the unfilled track dashed and fills it with solid
+// segments. The terminal dollar marker is rendered separately for its feedback color.
+func printerProgressBar(filled, width int) string {
+	width = max(0, width)
+	filled = min(width, max(0, filled))
+	return strings.Repeat("━", filled) + strings.Repeat("┄", width-filled)
+}
+
 func (a *App) cashPanelView(width int) string {
 	boxWidth := max(28,min(width-4,68))
 	inner := boxWidth-2
@@ -1000,17 +1030,10 @@ func (a *App) cashPanelView(width int) string {
 	if a.state.CashCapacity > 0 { util = int(a.state.CashOnHand*100/a.state.CashCapacity) }
 	barWidth := max(8,inner-16)
 	filled := min(barWidth,max(0,util*barWidth/100))
-	bar := strings.Repeat("━",filled)+strings.Repeat("─",barWidth-filled)
+	bar := capacityUtilizationBar(filled, barWidth)
 	barColor := green
 	if util >= 80 { barColor = amber }
-	if util >= 100 {
-		barColor = red
-		r := []rune(bar)
-		if len(r)>0 {
-			if a.uiFrame%6 < 3 { r[len(r)-1] = '!' } else { r[len(r)-1] = ' ' }
-		}
-		bar = string(r)
-	}
+	if util >= 100 { barColor = red }
 	status := fmt.Sprintf("%d%% UTILIZED",util)
 	if util >= 100 { status = fmt.Sprintf("%d%% OVERFLOW",util) }
 	barLine := bar+"  "+status
@@ -1034,13 +1057,26 @@ func (a *App) printPanel(l uiLayout) string {
 	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY OPEN")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n")
 	} else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n") }
 	width := max(10, min(l.Width-12, 54))
-	progress := a.state.Batch.Progress*width/game.BatchCycleTicks
-	if progress < 0 { progress = 0 }; if progress > width { progress = width }
-	bar := strings.Repeat("━", progress)+strings.Repeat("─", width-progress)
-	marker := "▶"; if a.state.Batch.WindowOpen { marker = "◆" }
-	if progress < width { runes := []rune(bar); runes[progress] = []rune(marker)[0]; bar = string(runes) }
-	b.WriteString("  "+lineStyle.Render(bar)+"\n")
-	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%", a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n")
+	endFlashActive := time.Now().Before(a.printerEndFlashUntil)
+	displayProgress := a.state.Batch.Progress
+	if endFlashActive { displayProgress = game.BatchCycleTicks }
+	progress := displayProgress*width/game.BatchCycleTicks
+	progress = min(width, max(0, progress))
+	bar := printerProgressBar(progress, width)
+	dollarStyle := lineStyle
+	if a.state.Batch.PlayerQueuedDollars > 0 { dollarStyle = lipgloss.NewStyle().Foreground(amber) }
+	if endFlashActive {
+		switch a.printerEndFlashColor {
+		case green:
+			if a.uiFrame%4 < 2 { dollarStyle = lipgloss.NewStyle().Foreground(green).Bold(true) } else { dollarStyle = lineStyle }
+		case amber:
+			if a.uiFrame%4 < 2 { dollarStyle = lipgloss.NewStyle().Foreground(amber).Bold(true) } else { dollarStyle = lineStyle }
+		default:
+			dollarStyle = lineStyle
+		}
+	}
+	b.WriteString("  "+lineStyle.Render(bar)+dollarStyle.Render("$")+"\n")
+	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%", displayProgress*100/game.BatchCycleTicks))+"\n")
 	injectStyle := labelStyle
 	if a.state.Batch.WindowOpen { injectStyle = okStyle }
 	if a.injectHeldRed || time.Now().Before(a.injectFlashUntil) { injectStyle = dangerStyle.Bold(true) }
