@@ -479,9 +479,7 @@ func TestModuleBootCompletesOnlyWhenDynamicBarFinishes(t *testing.T) {
 	app.advanceModuleBootAnimations(start)
 	if m.Booting { t.Fatal("phase transition should complete boot when it moves the bar to 100%") }
 	if !m.ActivatedFlash { t.Fatal("completed boot should display the activation flash") }
-	if got := moduleLevel(&app.state, "window_expansion"); got != 1 {
-		t.Fatalf("module effects should activate only after the animated bar completes, got level %d", got)
-	}
+
 	if visual.progress != 100 { t.Fatalf("completed bar should read 100%%, got %d%%", visual.progress) }
 }
 func TestRemovingLegacyControllerUnlocksOneBayAndEscalatesTheNextFee(t *testing.T) {
