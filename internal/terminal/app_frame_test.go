@@ -358,7 +358,7 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 			if tc.module.ID == "legacy_controller" {
 				name = "LEGACY PRINT CONTROLLER"
 			}
-			lines := rackModuleCard(tc.module, name, inner, 5_000, false, 4, 7)
+			lines := rackModuleCard(tc.module, name, inner, 5_000, false, 4, 35, "CALIBRATING TIMING BUS", true)
 			if len(lines) != rackBayHeight {
 				t.Fatalf("module card has %d rows; want %d", len(lines), rackBayHeight)
 			}
@@ -373,8 +373,14 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 					t.Errorf("row %d has width %d; want %d", row, got, inner+2)
 				}
 			}
-			if tc.name == "operational" && !strings.Contains(ansiSequences.ReplaceAllString(lines[4], ""), ".") {
-				t.Fatal("operational module should have a status LED in the reserved activity row")
+			if tc.name == "operational" {
+				if !strings.Contains(ansiSequences.ReplaceAllString(lines[4], ""), ".") {
+					t.Fatal("operational module should have a status LED in the reserved activity row")
+				}
+				wantEdge := lipgloss.NewStyle().Foreground(moduleColorForID(tc.module.ID)).Render("│")
+				if !strings.HasSuffix(lines[4], wantEdge) {
+					t.Fatalf("right enclosure edge beside the LED should retain the module color: got %q, want styled suffix %q", lines[4], wantEdge)
+				}
 			}
 			if tc.name == "jammed legacy" {
 				plain := ansiSequences.ReplaceAllString(strings.Join(lines, "\n"), "")
@@ -388,6 +394,70 @@ func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
 		})
 	}
 }
+
+
+func TestRackModuleLEDsUseIndependentBlinkSequences(t *testing.T) {
+	start := time.Unix(100, 0)
+	app := New(game.NewState(start))
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "rack"
+
+	for _, id := range []string{"window_expansion", "queue_calibration"} {
+		m := app.state.Module(id)
+		if m == nil { t.Fatalf("missing module %q", id) }
+		m.Level, m.Installed, m.Booting, m.ActivatedFlash = 1, true, false, false
+	}
+
+	var first, second strings.Builder
+	for i := 0; i < 40; i++ {
+		now := start.Add(time.Duration(i) * 100 * time.Millisecond)
+		app.advanceRackAnimations(now)
+		if app.moduleLEDs["window_expansion"].on { first.WriteByte('1') } else { first.WriteByte('0') }
+		if app.moduleLEDs["queue_calibration"].on { second.WriteByte('1') } else { second.WriteByte('0') }
+	}
+	if first.String() == second.String() {
+		t.Fatalf("module LED patterns should not be synchronized: both produced %q", first.String())
+	}
+	if app.moduleLEDs["window_expansion"].random == app.moduleLEDs["queue_calibration"].random {
+		t.Fatal("each module should keep its own random stream for blink timing")
+	}
+}
+
+func TestModuleBootProgressAndStatusUseIndependentTimers(t *testing.T) {
+	start := time.Unix(200, 0)
+	app := New(game.NewState(start))
+	m := app.state.Module("window_expansion")
+	if m == nil { t.Fatal("missing window expansion module") }
+	m.Level, m.Installed, m.Booting = 1, true, true
+	m.BootTicksTotal, m.BootTicksRemaining = 10, 10
+
+	visual := app.ensureModuleBootAnimation(*m, start)
+	progressBefore, statusBefore := visual.progress, visual.statusIndex
+	visual.nextProgressAt = start.Add(time.Hour)
+	visual.nextStatusAt = start
+	app.advanceRackAnimations(start)
+	if visual.progress != progressBefore {
+		t.Fatalf("progress should hold while its own timer is waiting: before=%d after=%d", progressBefore, visual.progress)
+	}
+	if visual.statusIndex == statusBefore {
+		t.Fatal("firmware status should be able to change while the progress bar is stationary")
+	}
+
+	statusWhileHeld := visual.statusIndex
+	visual.nextProgressAt = start
+	visual.nextStatusAt = start.Add(time.Hour)
+	for i := 1; i <= 50; i++ {
+		app.advanceRackAnimations(start.Add(time.Duration(i) * 100 * time.Millisecond))
+	}
+	if visual.progress <= progressBefore {
+		t.Fatalf("loading bar should advance independently of status text, progress stayed at %d", visual.progress)
+	}
+	if visual.statusIndex != statusWhileHeld {
+		t.Fatal("firmware status changed even though its independent timer was held")
+	}
+}
+
 
 func TestRemovingLegacyControllerUnlocksOneBayAndEscalatesTheNextFee(t *testing.T) {
 	app := New(game.NewState(time.Unix(1, 0)))
