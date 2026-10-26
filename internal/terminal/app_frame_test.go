@@ -117,14 +117,28 @@ func TestUpgradeDetailsUseSpacedColoredHeaderAndBottomAnchoredFooter(t *testing.
 
 	view := app.upgradesPanel(app.layout())
 	lines := plainViewLines(view)
-	headerY, header := rackLine(t, app, "WINDOW EXPANSION")
-	if !strings.Contains(header, "WINDOW EXPANSION") {
+	leftWidth, rightWidth := paneWidths(app.layout())
+	rightStart := leftWidth + 1
+	rightText := func(y int) string {
+		cells := []rune(lines[y])
+		start, end := rightStart+1, min(len(cells), rightStart+rightWidth-1)
+		if start >= end { return "" }
+		return strings.TrimSpace(string(cells[start:end]))
+	}
+	headerY := -1
+	for y := range lines {
+		if rightText(y) == "WINDOW EXPANSION" {
+			headerY = y
+			break
+		}
+	}
+	if headerY < 0 {
 		t.Fatal("selected upgrade name should appear in the details pane")
 	}
-	if headerY+1 >= len(lines) || !strings.Contains(lines[headerY+1], "----------------") {
+	if headerY+1 >= len(lines) || rightText(headerY+1) != strings.Repeat("-", len("WINDOW EXPANSION")) {
 		t.Fatal("upgrade title should have a matching hyphen underline")
 	}
-	if headerY+2 >= len(lines) || strings.TrimSpace(lines[headerY+2]) != "" {
+	if headerY+2 >= len(lines) || rightText(headerY+2) != "" {
 		t.Fatal("upgrade description should be separated from the title by a blank line")
 	}
 	if !strings.Contains(view, "Extends the injection opportunity by one active second per revision.") {
