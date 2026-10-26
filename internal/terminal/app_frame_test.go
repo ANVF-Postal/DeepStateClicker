@@ -404,9 +404,9 @@ func TestRackModuleLEDsUseIndependentBlinkSequences(t *testing.T) {
 	app.mainView = "rack"
 
 	for _, id := range []string{"window_expansion", "queue_calibration"} {
-		m := app.state.Module(id)
-		if m == nil { t.Fatalf("missing module %q", id) }
-		m.Level, m.Installed, m.Booting, m.ActivatedFlash = 1, true, false, false
+		app.state.Modules = append(app.state.Modules, game.ModuleState{
+			ID: id, Level: 1, Installed: true,
+		})
 	}
 
 	var first, second strings.Builder
@@ -427,10 +427,12 @@ func TestRackModuleLEDsUseIndependentBlinkSequences(t *testing.T) {
 func TestModuleBootProgressAndStatusUseIndependentTimers(t *testing.T) {
 	start := time.Unix(200, 0)
 	app := New(game.NewState(start))
+	app.state.Modules = append(app.state.Modules, game.ModuleState{
+		ID: "window_expansion", Level: 1, Installed: true, Booting: true,
+		BootTicksTotal: 10, BootTicksRemaining: 10,
+	})
 	m := app.state.Module("window_expansion")
 	if m == nil { t.Fatal("missing window expansion module") }
-	m.Level, m.Installed, m.Booting = 1, true, true
-	m.BootTicksTotal, m.BootTicksRemaining = 10, 10
 
 	visual := app.ensureModuleBootAnimation(*m, start)
 	progressBefore, statusBefore := visual.progress, visual.statusIndex
