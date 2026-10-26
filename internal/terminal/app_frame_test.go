@@ -448,6 +448,9 @@ func TestModuleBootStatusTransitionMovesBarAndHasIndependentDwell(t *testing.T) 
 	if visual.progress <= progressBefore {
 		t.Fatalf("status transition should visibly move the loading bar: before=%d after=%d", progressBefore, visual.progress)
 	}
+	if visual.progress != visual.progressMilestones[visual.statusIndex] {
+		t.Fatalf("status transition should land on its randomized checkpoint: got %d, want %d", visual.progress, visual.progressMilestones[visual.statusIndex])
+	}
 
 	statusWhileHeld := visual.statusIndex
 	progressBefore = visual.progress
@@ -487,6 +490,53 @@ func TestModuleBootPhaseDelayCannotExceed1600Milliseconds(t *testing.T) {
 		if delay < 700*time.Millisecond || delay > 1600*time.Millisecond {
 			t.Fatalf("seed %d produced phase delay %s outside 700ms–1.6s", seedValue, delay)
 		}
+	}
+}
+
+func TestModuleBootProgressMilestonesCreateOrganicVariedCurves(t *testing.T) {
+	sawEarlyLaunch := false
+	sawCrawlThenSurge := false
+
+	for seedValue := uint64(1); seedValue <= 300; seedValue++ {
+		seed := seedValue
+		phaseCount := 4 + int(seedValue%5)
+		curve := chooseBootProgressMilestones(&seed, phaseCount)
+		if len(curve) != phaseCount {
+			t.Fatalf("seed %d produced %d checkpoints, want %d", seedValue, len(curve), phaseCount)
+		}
+		if curve[0] != 0 {
+			t.Fatalf("seed %d should start at 0%%, got %d%%", seedValue, curve[0])
+		}
+		if curve[len(curve)-1] < 94 || curve[len(curve)-1] > 97 {
+			t.Fatalf("seed %d should leave a slow approach from the low-to-mid 90s, got %d%%", seedValue, curve[len(curve)-1])
+		}
+
+		largestJump := 0
+		for i := 1; i < len(curve); i++ {
+			if curve[i] <= curve[i-1] {
+				t.Fatalf("seed %d checkpoints must rise strictly: %v", seedValue, curve)
+			}
+			if jump := curve[i] - curve[i-1]; jump > largestJump {
+				largestJump = jump
+			}
+		}
+		if largestJump < 20 {
+			t.Fatalf("seed %d lacks a meaningful surge: %v", seedValue, curve)
+		}
+
+		if curve[1] >= 40 {
+			sawEarlyLaunch = true
+		}
+		if curve[1] <= 10 && largestJump >= 20 {
+			sawCrawlThenSurge = true
+		}
+	}
+
+	if !sawEarlyLaunch {
+		t.Fatal("random curves should include an early high-speed launch")
+	}
+	if !sawCrawlThenSurge {
+		t.Fatal("random curves should include an opening crawl followed by a major surge")
 	}
 }
 
