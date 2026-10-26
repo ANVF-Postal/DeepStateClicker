@@ -39,8 +39,6 @@ type moduleLEDAnimation struct {
 }
 
 type moduleBootAnimation struct {
-	startedAt       time.Time
-	duration        time.Duration
 	progress        int
 	statusIndex     int
 	nextProgressAt  time.Time
@@ -135,8 +133,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if a.screen == screenGame {
 			previousNews := a.state.NewsIndex
-			a.state.Advance(time.Time(msg))
+			now := time.Time(msg)
+			a.state.Advance(now)
 			if a.state.NewsIndex != previousNews { a.startNewsDispatch() }
+			// When the rack is hidden, booting hardware still advances at the
+			// simulation's normal one-second cadence without rapid redraw work.
+			if a.state.CurrentTab != game.TabPrint || a.mainView != "rack" {
+				a.advanceModuleBootAnimations(now)
+			}
 			return a, tick()
 		}
 	case uiPulseMsg:
@@ -1276,6 +1280,23 @@ func randomVisualDelay(seed *uint64, minDelay, maxDelay time.Duration) time.Dura
 	return minDelay + time.Duration(nextVisualRandom(seed)%uint64(steps))*step
 }
 
+// Boot phases usually last a few seconds, with occasional long stalls. The
+// duration is chosen one phase at a time, so total boot time is not predetermined.
+func randomBootPhaseDelay(seed *uint64) time.Duration {
+	switch roll := nextVisualRandom(seed) % 100; {
+	case roll < 18:
+		return randomVisualDelay(seed, 600*time.Millisecond, 1400*time.Millisecond)
+	case roll < 52:
+		return randomVisualDelay(seed, 1500*time.Millisecond, 2800*time.Millisecond)
+	case roll < 78:
+		return randomVisualDelay(seed, 2900*time.Millisecond, 4800*time.Millisecond)
+	case roll < 93:
+		return randomVisualDelay(seed, 4900*time.Millisecond, 7500*time.Millisecond)
+	default:
+		return randomVisualDelay(seed, 7600*time.Millisecond, 14000*time.Millisecond)
+	}
+}
+
 func moduleColorForID(id string) lipgloss.Color {
 	for _, spec := range game.ModuleCatalog {
 		if spec.ID == id { return lipgloss.Color(spec.Color) }
@@ -1301,23 +1322,19 @@ func (a *App) ensureModuleBootAnimation(m game.ModuleState, now time.Time) *modu
 	if a.moduleBoots == nil { a.moduleBoots = make(map[string]*moduleBootAnimation) }
 	if animation := a.moduleBoots[m.ID]; animation != nil { return animation }
 
-	totalTicks := max(1, m.BootTicksTotal)
-	elapsedTicks := max(0, m.BootTicksTotal-m.BootTicksRemaining)
-	elapsedTicks = min(totalTicks, elapsedTicks)
 	seed := visualSeed(m.ID, now)
 	progressRandom := seed ^ uint64(0xa0761d6478bd642f)
 	statusRandom := seed ^ uint64(0xe7037ed1a0b428db)
-	statusIndex := int(nextVisualRandom(&statusRandom) % uint64(len(bootStatusMessages)))
 	animation := &moduleBootAnimation{
-		startedAt: now.Add(-time.Duration(elapsedTicks)*time.Second),
-		duration: time.Duration(totalTicks)*time.Second,
-		progress: min(99, elapsedTicks*100/totalTicks),
-		statusIndex: statusIndex,
+		// Firmware starts at phase one. Progress and phase dwell times are
+		// generated as the sequence runs, rather than from a fixed total.
+		progress: 0,
+		statusIndex: 0,
 		progressRandom: progressRandom,
 		statusRandom: statusRandom,
 	}
-	animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 80*time.Millisecond, 480*time.Millisecond))
-	animation.nextStatusAt = now.Add(randomVisualDelay(&animation.statusRandom, 800*time.Millisecond, 2400*time.Millisecond))
+	animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 200*time.Millisecond, 900*time.Millisecond))
+	animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
 	a.moduleBoots[m.ID] = animation
 	return animation
 }
@@ -1328,55 +1345,64 @@ func (a *App) moduleBootDisplay(m game.ModuleState, now time.Time) (int, string)
 	return animation.progress, bootStatusMessages[statusIndex]
 }
 
-func (a *App) advanceRackAnimations(now time.Time) {
+// advanceModuleBootAnimations is the boot sequence's source of truth. Its total
+// duration is not known in advance: each firmware phase gets its own dwell time,
+// and each phase transition advances the bar by a variable amount.
+func (a *App) advanceModuleBootAnimations(now time.Time) {
 	for i := range a.state.Modules {
 		m := &a.state.Modules[i]
-		if !m.Installed || m.Jammed {
-			delete(a.moduleLEDs, m.ID)
+		if !m.Installed || m.Jammed || !m.Booting {
 			delete(a.moduleBoots, m.ID)
 			continue
 		}
-		if m.Booting {
-			animation := a.ensureModuleBootAnimation(*m, now)
-			elapsed := now.Sub(animation.startedAt)
-			if elapsed < 0 { elapsed = 0 }
-			baseProgress := 0
-			if animation.duration > 0 {
-				baseProgress = min(100, int(elapsed*100/animation.duration))
+		animation := a.ensureModuleBootAnimation(*m, now)
+
+		if !now.Before(animation.nextProgressAt) {
+			roll := nextVisualRandom(&animation.progressRandom) % 100
+			step := 0
+			switch {
+			case roll < 54:
+				step = 0 // status remains legible while the bar holds
+			case roll < 82:
+				step = 1
+			case roll < 96:
+				step = 2
+			default:
+				step = 3
 			}
-			// Let the bar drift a little ahead of elapsed time, then pause until
-			// the real boot clock catches up. It cannot finish before the module.
-			progressCeiling := min(99, baseProgress+12)
-			if !now.Before(animation.nextProgressAt) {
-				roll := nextVisualRandom(&animation.progressRandom) % 10
-				step := 0
-				switch {
-				case roll < 4:
-					step = 0 // occasionally hold perfectly still
-				case roll < 8:
-					step = 1 // a small, cautious increment
-				case roll == 8:
-					step = 3 // a quick jump
-				default:
-					step = 6 // a sudden burst forward
+			animation.progress = min(99, animation.progress+step)
+			animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 150*time.Millisecond, 850*time.Millisecond))
+		}
+
+		if !now.Before(animation.nextStatusAt) {
+			animation.statusIndex = (animation.statusIndex+1) % len(bootStatusMessages)
+			// A firmware phase transition always produces a visible bar movement.
+			// The size varies independently for every phase.
+			roll := nextVisualRandom(&animation.statusRandom) % 100
+			step := 4 + int(nextVisualRandom(&animation.statusRandom)%5)
+			if roll >= 82 { step += int(nextVisualRandom(&animation.statusRandom)%5) }
+			animation.progress = min(100, animation.progress+step)
+			if animation.progress >= 100 {
+				if err := a.state.CompleteModuleBoot(m.ID, now); err == nil {
+					animation.progress = 100
+					delete(a.moduleBoots, m.ID)
+					delete(a.moduleLEDs, m.ID)
 				}
-				animation.progress = min(progressCeiling, animation.progress+step)
-				animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 80*time.Millisecond, 480*time.Millisecond))
+				continue
 			}
-			// Status changes follow their own timer and random stream. Several
-			// bar movements can occur between firmware messages, or vice versa.
-			if !now.Before(animation.nextStatusAt) {
-				previous := animation.statusIndex
-				animation.statusIndex = int(nextVisualRandom(&animation.statusRandom) % uint64(len(bootStatusMessages)))
-				if animation.statusIndex == previous {
-					animation.statusIndex = (animation.statusIndex+1) % len(bootStatusMessages)
-				}
-				animation.nextStatusAt = now.Add(randomVisualDelay(&animation.statusRandom, 800*time.Millisecond, 2400*time.Millisecond))
-			}
+			animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
+		}
+	}
+}
+
+func (a *App) advanceRackAnimations(now time.Time) {
+	a.advanceModuleBootAnimations(now)
+	for i := range a.state.Modules {
+		m := &a.state.Modules[i]
+		if !m.Installed || m.Jammed || m.Booting {
 			delete(a.moduleLEDs, m.ID)
 			continue
 		}
-
 		delete(a.moduleBoots, m.ID)
 		if m.ActivatedFlash { continue }
 		led := a.ensureModuleLED(m.ID, now)
@@ -1414,7 +1440,7 @@ func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int6
 			"│"+padCells(" "+truncate(name, max(1,inner-1)), "", inner)+"│",
 			"│"+padCells(" JAMMED - SPECIALIST REMOVAL", "", inner)+"│",
 			"│"+strings.Repeat(" ", inner)+"│",
-			"│"+padCells("", button, inner)+"│",
+			"│"+padCells("", button, inner-1)+orangeRackStyle(false).Render("│"),
 			"└"+strings.Repeat("─", inner)+"┘",
 		}
 	}
