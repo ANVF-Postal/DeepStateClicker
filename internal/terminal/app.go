@@ -343,7 +343,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 							return nil
 						}
 					}
-				} else if mouseWithin(line, x, "[ENTER / B] BUY / UPGRADE") || mouseWithin(line, x, "[CONFIRM] CLICK BUY / UPGRADE AGAIN") {
+				} else if mouseWithin(line, x, "[UPGRADE]") || mouseWithin(line, x, "[CONFIRM UPGRADE]") {
 					return a.armOrConfirmUpgradeBuy()
 				}
 			}
@@ -502,7 +502,7 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 			case mouseWithin(line, x, "[B] BACK TO OPERATIONS"):
 				a.mainView = "print"
 				a.message = ""
-			case a.mainView == "upgrades" && mouseWithin(line, x, "[ENTER / B] BUY / UPGRADE"):
+			case a.mainView == "upgrades" && (mouseWithin(line, x, "[UPGRADE]") || mouseWithin(line, x, "[CONFIRM UPGRADE]")):
 				a.activateMainSelection()
 			case a.mainView == "rack" && (strings.Contains(line, "MODULES") || strings.Contains(line, "INSTALLED RACK")):
 				a.rackFocusRight = strings.Contains(line, "INSTALLED RACK") || x > lWidthForRack(a.width)
@@ -1144,6 +1144,7 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
 		left.WriteString(padCells(style.Render(name), labelStyle.Render(revision), leftWidth-2)+"\n")
 	}
+
 	idx := max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade))
 	spec := game.ModuleCatalog[idx]
 	m := a.state.Module(spec.ID)
@@ -1153,10 +1154,17 @@ func (a *App) upgradesPanel(l uiLayout) string {
 		level = m.Level
 		installed = m.Installed
 	}
-	right.WriteString(titleStyle.Render(spec.Name)+"\n")
-	right.WriteString(wrapText(spec.Description, max(18, rightWidth-4))+"\n")
+
+	moduleColor := lipgloss.Color(spec.Color)
+	right.WriteString(lipgloss.NewStyle().Foreground(moduleColor).Bold(true).Render(spec.Name)+"\n")
+	right.WriteString(lipgloss.NewStyle().Foreground(moduleColor).Render(strings.Repeat("-", lipgloss.Width(spec.Name)))+"\n\n")
+	right.WriteString(wrapText(spec.Description, max(18, rightWidth-4))+"\n\n")
+
+	// Keep revision, suspicion, cost, and any eligibility note together as one
+	// compact metadata block, separate from the description and purchase action.
 	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d", level, spec.MaxLevel))+"\n")
 	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5", spec.Suspicion))+"\n")
+	canUpgrade := level < spec.MaxLevel && !(spec.ID == "obfuscation" && a.state.Risk < 25)
 	if spec.ID == "obfuscation" && a.state.Risk < 25 {
 		right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
 	} else if level >= spec.MaxLevel {
@@ -1167,31 +1175,51 @@ func (a *App) upgradesPanel(l uiLayout) string {
 			right.WriteString(labelStyle.Render("INSTALL IT FROM HARDWARE RACK")+"\n")
 		}
 	} else {
-		if level == 0 {
-			right.WriteString(labelStyle.Render("ACQUISITION COST: $"+money(spec.Cost))+"\n")
-		} else {
-			right.WriteString(labelStyle.Render("NEXT REVISION COST: $"+money(spec.Cost*int64(level+1)))+"\n")
+		cost := spec.Cost * int64(level+1)
+		costLabel := "ACQUISITION COST: "
+		if level > 0 { costLabel = "NEXT REVISION COST: " }
+		costColor := red
+		if a.state.CashOnHand >= cost { costColor = green }
+		right.WriteString(labelStyle.Render(costLabel)+lipgloss.NewStyle().Foreground(costColor).Bold(true).Render("$"+money(cost))+"\n")
+		if level > 0 {
 			if !installed {
 				right.WriteString(okStyle.Render("READY FOR INSTALLATION IN HARDWARE RACK")+"\n")
 			} else {
 				right.WriteString(labelStyle.Render("PURCHASING THIS REVISION REQUIRES REINSTALLATION")+"\n")
 			}
 		}
-		buyLabel := "[ENTER / B] BUY / UPGRADE"
+	}
+
+	if canUpgrade {
+		right.WriteString("\n")
+		buyLabel := "[UPGRADE]"
 		if a.upgradeBuyArmed {
-			buyLabel = "[CONFIRM] CLICK BUY / UPGRADE AGAIN"
+			buyLabel = "[CONFIRM UPGRADE]"
 			right.WriteString(okStyle.Render(buyLabel)+"\n")
 		} else {
 			right.WriteString(selectedStyle.Render(buyLabel)+"\n")
 		}
 	}
-	right.WriteString(labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
+
+	// The navigation hint stays on the final interior row regardless of how
+	// much detail the selected module needs.
+	contentHeight := max(1, paneHeight-2)
+	rightLines := strings.Split(strings.TrimSuffix(right.String(), "\n"), "\n")
+	if len(rightLines) > contentHeight-1 {
+		rightLines = rightLines[:contentHeight-1]
+	}
+	for len(rightLines) < contentHeight-1 {
+		rightLines = append(rightLines, "")
+	}
+	rightLines = append(rightLines, labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
+	right.Reset()
+	right.WriteString(strings.Join(rightLines, "\n"))
+
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		windowPane("MODULE CATALOG", left.String(), leftWidth, paneHeight),
 		" ",
 		windowPane("MODULE DETAILS", right.String(), rightWidth, paneHeight))
 }
-
 const rackBayHeight = 6
 
 func visibleRackBays(paneHeight int) int {
