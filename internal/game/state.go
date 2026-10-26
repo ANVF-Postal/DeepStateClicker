@@ -72,6 +72,7 @@ type BatchState struct {
 	Number int64 `json:"number"`
 	Progress int `json:"progress_ticks"`
 	QueuedDollars int `json:"queued_dollars"`
+	PlayerQueuedDollars int `json:"player_queued_dollars,omitempty"`
 	Completed int64 `json:"completed_batches"`
 	LastOutcome string `json:"last_outcome"`
 	WindowOpen bool `json:"window_open"`
@@ -241,6 +242,7 @@ func (s *State) QueueExploit(now time.Time) error {
 	if s.Status != RunFederal && s.Status != RunSandbox { return errors.New("this run is no longer active") }
 	if !s.Batch.WindowOpen { return ErrWindowClosed }
 	s.Batch.QueuedDollars++
+	s.Batch.PlayerQueuedDollars++
 	s.Batch.LastOutcome = "An extra print instruction is queued for the active batch."
 	s.UpdatedAt = now
 	return nil
@@ -527,6 +529,7 @@ func (s *State) Advance(now time.Time) {
 		s.Batch.Number++
 		s.Batch.Progress = 0
 		s.Batch.QueuedDollars = 0
+		s.Batch.PlayerQueuedDollars = 0
 		s.Batch.WindowOpen = false
 		s.Batch.WindowMissed = false
 	}
