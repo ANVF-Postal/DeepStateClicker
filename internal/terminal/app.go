@@ -1001,7 +1001,7 @@ func (a *App) gameView() string {
 func capacityUtilizationBar(filled, width int) string {
 	width = max(0, width)
 	filled = min(width, max(0, filled))
-	return strings.Repeat("━", filled) + strings.Repeat(" ", width-filled)
+	return strings.Repeat("━", filled) + strings.Repeat("─", width-filled)
 }
 
 // printerProgressBar keeps the unfilled track dashed and fills it with solid
@@ -1009,7 +1009,7 @@ func capacityUtilizationBar(filled, width int) string {
 func printerProgressBar(filled, width int) string {
 	width = max(0, width)
 	filled = min(width, max(0, filled))
-	return strings.Repeat("━", filled) + strings.Repeat("-", width-filled)
+	return strings.Repeat("─", filled) + strings.Repeat("━", width-filled)
 }
 
 // printerProgressDisplayBar adds the original triangle at the current fill edge.
