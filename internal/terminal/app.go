@@ -1060,7 +1060,7 @@ func (a *App) cashPanelView(width int) string {
 	if util >= 100 { barColor = red }
 	status := fmt.Sprintf("%d%% UTILIZED",util)
 	if util >= 100 { status = fmt.Sprintf("%d%% OVERFLOW",util) }
-	barLine := bar+"  "+status
+	barLine := " "+bar+"  "+status
 	rows := []string{
 		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(amber).Bold(true).Render(truncate(cashLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(cashLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
 		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(capacityLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(capacityLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
