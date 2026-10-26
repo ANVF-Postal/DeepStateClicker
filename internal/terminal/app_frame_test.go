@@ -800,14 +800,34 @@ func TestCapacityBarUsesSolidFillAndBlankRemainder(t *testing.T) {
 }
 
 func TestPrinterBarUsesDashedTrackAndSolidFill(t *testing.T) {
-	if got, want := printerProgressBar(2, 5), "━━┄┄┄"; got != want {
+	if got, want := printerProgressBar(2, 5), "━━---"; got != want {
 		t.Fatalf("partially filled printer bar = %q, want %q", got, want)
 	}
 	if got, want := printerProgressBar(5, 5), "━━━━━"; got != want {
 		t.Fatalf("full printer bar = %q, want %q", got, want)
 	}
-	if got, want := printerProgressBar(0, 5), "┄┄┄┄┄"; got != want {
+	if got, want := printerProgressBar(0, 5), "-----"; got != want {
 		t.Fatalf("empty printer bar = %q, want %q", got, want)
+	}
+}
+
+func TestPrinterProgressHeadTracksFillAndStaysVisibleAtCompletion(t *testing.T) {
+	cases := []struct {
+		name string
+		filled, width int
+		want string
+	}{
+		{name: "empty", filled: 0, width: 5, want: "▶----"},
+		{name: "partial", filled: 2, width: 5, want: "━━▶--"},
+		{name: "complete", filled: 5, width: 5, want: "━━━━▶"},
+		{name: "zero width", filled: 0, width: 0, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := printerProgressDisplayBar(tc.filled, tc.width); got != tc.want {
+				t.Fatalf("printer display bar = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
