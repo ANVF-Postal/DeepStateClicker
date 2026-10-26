@@ -1009,7 +1009,7 @@ func capacityUtilizationBar(filled, width int) string {
 func printerProgressBar(filled, width int) string {
 	width = max(0, width)
 	filled = min(width, max(0, filled))
-	return strings.Repeat("━", filled) + strings.Repeat("┄", width-filled)
+	return strings.Repeat("━", filled) + strings.Repeat("-", width-filled)
 }
 
 func printerDollarColor(batch game.BatchState) lipgloss.Color {
@@ -1074,19 +1074,25 @@ func (a *App) printPanel(l uiLayout) string {
 	if endFlashActive { displayProgress = game.BatchCycleTicks }
 	progress := displayProgress*width/game.BatchCycleTicks
 	progress = min(width, max(0, progress))
-	bar := printerProgressBar(progress, width)
+	bar := []rune(printerProgressBar(progress, width))
+	// Keep the original right-pointing triangle at the live fill boundary.
+	// At 100%, pin it to the final cell so the head never disappears.
+	if len(bar) > 0 {
+		markerAt := min(progress, len(bar)-1)
+		bar[markerAt] = '▶'
+	}
 	dollarStyle := lipgloss.NewStyle().Foreground(printerDollarColor(a.state.Batch))
 	if endFlashActive {
 		switch a.printerEndFlashColor {
 		case green:
-			if a.uiFrame%4 < 2 { dollarStyle = lipgloss.NewStyle().Foreground(green).Bold(true) } else { dollarStyle = lineStyle }
+			dollarStyle = lipgloss.NewStyle().Foreground(green).Bold(true)
 		case amber:
-			if a.uiFrame%4 < 2 { dollarStyle = lipgloss.NewStyle().Foreground(amber).Bold(true) } else { dollarStyle = lineStyle }
+			dollarStyle = lipgloss.NewStyle().Foreground(amber).Bold(true)
 		default:
-			dollarStyle = lineStyle
+			dollarStyle = lipgloss.NewStyle().Foreground(printerTrackColor)
 		}
 	}
-	b.WriteString("  "+lineStyle.Render(bar)+dollarStyle.Render("$")+"\n")
+	b.WriteString("  "+lineStyle.Render(string(bar))+dollarStyle.Render("$")+"\n")
 	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%", displayProgress*100/game.BatchCycleTicks))+"\n")
 	injectStyle := labelStyle
 	if a.state.Batch.WindowOpen { injectStyle = okStyle }
