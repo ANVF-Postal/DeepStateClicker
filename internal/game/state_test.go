@@ -210,27 +210,29 @@ func TestRemovedModuleCanBeReinstalledWithoutLosingRevision(t *testing.T) {
 }
 
 
-func TestModuleEffectsWaitForBootAndReinstallReboots(t *testing.T) {
+func TestModuleEffectsWaitForDynamicBootCompletionAndReinstallReboots(t *testing.T) {
 	now := time.Unix(1, 0)
 	s := NewState(now)
 	s.RandomState = 42
 	s.CashOnHand = 100_000
 	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
 	m := s.Module("window_expansion")
-	if m == nil || !m.Installed || !m.Booting || m.BootTicksRemaining < 6 || m.BootTicksRemaining > 12 {
-		t.Fatalf("module should transfer to rack and boot for a bounded duration: %#v", m)
+	if m == nil || !m.Installed || !m.Booting || m.BootTicksTotal != 0 || m.BootTicksRemaining != 0 {
+		t.Fatalf("module should transfer to rack with no pre-defined boot countdown: %#v", m)
 	}
 	if got := moduleLevel(&s, "window_expansion"); got != 0 { t.Fatalf("booting module must not grant effects, got level %d", got) }
-	duration := m.BootTicksRemaining
-	for i:=0; i<duration; i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
-	if m.Booting { t.Fatal("module should finish booting after its active-time countdown") }
-	if got := moduleLevel(&s, "window_expansion"); got != 1 { t.Fatalf("module effect should activate after boot, got level %d", got) }
+	// Simulation ticks alone do not force a loading animation to finish.
+	for i := 0; i < 30; i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
+	if !m.Booting { t.Fatal("module should remain booting until its dynamic firmware sequence finishes") }
+	if got := moduleLevel(&s, "window_expansion"); got != 0 { t.Fatalf("booting module must not grant effects after elapsed ticks, got %d", got) }
+	if err := s.CompleteModuleBoot("window_expansion", now.Add(31*time.Second)); err != nil { t.Fatal(err) }
+	if m.Booting { t.Fatal("module should leave booting state when the firmware sequence completes") }
+	if got := moduleLevel(&s, "window_expansion"); got != 1 { t.Fatalf("module effect should activate after boot, got %d", got) }
 	if !m.ActivatedFlash { t.Fatal("activation should show a brief confirmation state") }
 	if err := s.RemoveModule("window_expansion", now); err != nil { t.Fatal(err) }
 	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
 	if !m.Booting || m.Level != 1 { t.Fatalf("reinstallation should reboot without losing revision: %#v",m) }
 }
-
 func TestUptimePersistsSeparatelyFromSimulationTick(t *testing.T) {
 	now := time.Unix(1,0)
 	s := NewState(now)
