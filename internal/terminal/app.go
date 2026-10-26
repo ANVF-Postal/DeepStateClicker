@@ -39,13 +39,14 @@ type moduleLEDAnimation struct {
 }
 
 type moduleBootAnimation struct {
-	progress        int
-	statusIndex     int
-	statusMessages  []string
-	nextProgressAt  time.Time
-	nextStatusAt    time.Time
-	progressRandom  uint64
-	statusRandom    uint64
+	progress           int
+	statusIndex        int
+	statusMessages     []string
+	progressMilestones []int
+	nextProgressAt     time.Time
+	nextStatusAt       time.Time
+	progressRandom     uint64
+	statusRandom       uint64
 }
 
 var bootStatusMessages = []string{
@@ -1317,6 +1318,80 @@ func chooseBootStatusSequence(seed *uint64) []string {
 	return append([]string(nil), pool[:count]...)
 }
 
+// chooseBootProgressMilestones creates a randomized progress "shape" for one
+// boot. Curves vary between an early launch, a mid-boot surge, and a two-block
+// climb. Every curve leaves room for a slow final approach instead of treating
+// the loading bar like a steady countdown.
+func chooseBootProgressMilestones(seed *uint64, phaseCount int) []int {
+	if phaseCount <= 0 {
+		return nil
+	}
+	milestones := make([]int, phaseCount)
+	if phaseCount == 1 {
+		return milestones
+	}
+
+	randomInt := func(low, high int) int {
+		if high <= low {
+			return low
+		}
+		return low + int(nextVisualRandom(seed)%uint64(high-low+1))
+	}
+	finalTarget := randomInt(94, 97)
+	milestones[phaseCount-1] = finalTarget
+
+	// Advance between established checkpoints in small, controlled blocks.
+	// The minimum spacing leaves room for the independent in-phase creep.
+	fillGradual := func(startIndex int) {
+		for i := startIndex; i < phaseCount-1; i++ {
+			previous := milestones[i-1]
+			maxTarget := finalTarget - 3*(phaseCount-1-i)
+			milestones[i] = min(previous+randomInt(3, 6), maxTarget)
+		}
+	}
+
+	switch int(nextVisualRandom(seed) % 3) {
+	case 0:
+		// Early launch: the opening barely moves, then the bar leaps forward.
+		upper := min(84, finalTarget-3*(phaseCount-2))
+		milestones[1] = randomInt(52, upper)
+		fillGradual(2)
+
+	case 1:
+		// Mid/late surge: several small advances lead into one massive block.
+		surgeIndex := randomInt(2, phaseCount-2)
+		milestones[1] = randomInt(2, 7)
+		for i := 2; i < surgeIndex; i++ {
+			milestones[i] = milestones[i-1] + randomInt(2, 3)
+		}
+		previous := milestones[surgeIndex-1]
+		lower := max(52, previous+15)
+		upper := min(86, finalTarget-3*(phaseCount-1-surgeIndex))
+		milestones[surgeIndex] = randomInt(lower, upper)
+		fillGradual(surgeIndex + 1)
+
+	default:
+		// Two-block climb: a modest jump, a second larger surge, then a crawl.
+		milestones[1] = randomInt(2, 7)
+		if phaseCount == 4 {
+			milestones[2] = randomInt(42, 70)
+			break
+		}
+		milestones[2] = randomInt(28, 38)
+		surgeIndex := randomInt(3, phaseCount-2)
+		for i := 3; i < surgeIndex; i++ {
+			milestones[i] = milestones[i-1] + randomInt(2, 4)
+		}
+		previous := milestones[surgeIndex-1]
+		lower := max(60, previous+8)
+		upper := min(86, finalTarget-3*(phaseCount-1-surgeIndex))
+		milestones[surgeIndex] = randomInt(lower, upper)
+		fillGradual(surgeIndex + 1)
+	}
+
+	return milestones
+}
+
 func moduleColorForID(id string) lipgloss.Color {
 	for _, spec := range game.ModuleCatalog {
 		if spec.ID == id { return lipgloss.Color(spec.Color) }
@@ -1339,20 +1414,26 @@ func (a *App) moduleLEDOn(id string, now time.Time) bool {
 }
 
 func (a *App) ensureModuleBootAnimation(m game.ModuleState, now time.Time) *moduleBootAnimation {
-	if a.moduleBoots == nil { a.moduleBoots = make(map[string]*moduleBootAnimation) }
-	if animation := a.moduleBoots[m.ID]; animation != nil { return animation }
+	if a.moduleBoots == nil {
+		a.moduleBoots = make(map[string]*moduleBootAnimation)
+	}
+	if animation := a.moduleBoots[m.ID]; animation != nil {
+		return animation
+	}
 
 	seed := visualSeed(m.ID, now)
 	progressRandom := seed ^ uint64(0xa0761d6478bd642f)
 	statusRandom := seed ^ uint64(0xe7037ed1a0b428db)
+	statusMessages := chooseBootStatusSequence(&statusRandom)
 	animation := &moduleBootAnimation{
-		// Firmware starts at phase one. Progress and phase dwell times are
-		// generated as the sequence runs, rather than from a fixed total.
-		progress: 0,
-		statusIndex: 0,
-		statusMessages: chooseBootStatusSequence(&statusRandom),
-		progressRandom: progressRandom,
-		statusRandom: statusRandom,
+		// Each boot gets its own curve and status sequence. The curve controls
+		// the broad shape; small random movements add texture between phases.
+		progress:           0,
+		statusIndex:        0,
+		statusMessages:     statusMessages,
+		progressMilestones: chooseBootProgressMilestones(&progressRandom, len(statusMessages)),
+		progressRandom:     progressRandom,
+		statusRandom:       statusRandom,
 	}
 	animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 200*time.Millisecond, 900*time.Millisecond))
 	animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
@@ -1366,9 +1447,10 @@ func (a *App) moduleBootDisplay(m game.ModuleState, now time.Time) (int, string)
 	return animation.progress, animation.statusMessages[statusIndex]
 }
 
-// advanceModuleBootAnimations is the boot sequence's source of truth. Its total
-// duration is not known in advance: each firmware phase gets its own dwell time,
-// and each phase transition advances the bar by a variable amount.
+// advanceModuleBootAnimations advances each randomized progress curve. During a
+// status phase, the bar can creep only partway toward the next checkpoint; the
+// status change then delivers the larger jump. The final phase inches toward
+// 99% before the same phase timer completes activation.
 func (a *App) advanceModuleBootAnimations(now time.Time) {
 	for i := range a.state.Modules {
 		m := &a.state.Modules[i]
@@ -1383,7 +1465,7 @@ func (a *App) advanceModuleBootAnimations(now time.Time) {
 			step := 0
 			switch {
 			case roll < 54:
-				step = 0 // status remains legible while the bar holds
+				step = 0 // let the current phase breathe
 			case roll < 82:
 				step = 1
 			case roll < 96:
@@ -1391,14 +1473,22 @@ func (a *App) advanceModuleBootAnimations(now time.Time) {
 			default:
 				step = 3
 			}
-			animation.progress = min(99, animation.progress+step)
+
+			ceiling := 99
+			if animation.statusIndex < len(animation.progressMilestones)-1 {
+				current := animation.progressMilestones[animation.statusIndex]
+				next := animation.progressMilestones[animation.statusIndex+1]
+				// Preserve most of the upcoming jump for the status transition.
+				creep := max(1, (next-current)/3)
+				ceiling = min(next-1, current+creep)
+			}
+			animation.progress = min(ceiling, animation.progress+step)
 			animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 150*time.Millisecond, 850*time.Millisecond))
 		}
 
 		if !now.Before(animation.nextStatusAt) {
-			// Hold each selected status for its full randomized phase. The final
-			// unique message completes the sequence, even if the bar has been
-			// stuttering near 99% for a while.
+			// The last unique message gets a full dwell too. Activation happens
+			// only when that final phase expires, even if progress already reads 99%.
 			if animation.statusIndex+1 >= len(animation.statusMessages) {
 				animation.progress = 100
 				if err := a.state.CompleteModuleBoot(m.ID, now); err == nil {
@@ -1408,12 +1498,7 @@ func (a *App) advanceModuleBootAnimations(now time.Time) {
 				continue
 			}
 			animation.statusIndex++
-			// A firmware phase transition always produces a visible bar movement.
-			// The size varies independently for every phase.
-			roll := nextVisualRandom(&animation.statusRandom) % 100
-			step := 4 + int(nextVisualRandom(&animation.statusRandom)%5)
-			if roll >= 82 { step += int(nextVisualRandom(&animation.statusRandom)%5) }
-			animation.progress = min(99, animation.progress+step)
+			animation.progress = animation.progressMilestones[animation.statusIndex]
 			animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
 		}
 	}
