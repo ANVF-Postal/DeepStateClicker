@@ -247,12 +247,29 @@ func (s *State) QueueExploit(now time.Time) error {
 }
 
 func startModuleBoot(s *State, m *ModuleState) {
-	// 6–12 active seconds; each firmware phase lasts a randomized one or two ticks.
-	duration := 6 + s.randomInt(7)
+	// The terminal's firmware animation now determines when initialization ends.
+	// Keep the legacy countdown fields at zero for compatibility with old saves.
 	m.Booting = true
 	m.ActivatedFlash = false
-	m.BootTicksTotal = duration
-	m.BootTicksRemaining = duration
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+}
+
+// CompleteModuleBoot marks an installed module online after its dynamic firmware
+// sequence finishes. Boot duration is determined by the changing phases, not by
+// a fixed number of simulation ticks.
+func (s *State) CompleteModuleBoot(id string, now time.Time) error {
+	m := s.Module(id)
+	if m == nil || !m.Installed || m.Jammed || !m.Booting {
+		return errors.New("module is not awaiting initialization")
+	}
+	m.Booting = false
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+	m.ActivatedFlash = true
+	s.addEvent("module_activated", m.ID+" initialization complete. Module online.", now)
+	s.UpdatedAt = now
+	return nil
 }
 
 // ResetSystemUptime is reserved for genuine system resets (e.g. power loss), not app exits.
@@ -463,15 +480,9 @@ func (s *State) Advance(now time.Time) {
 	s.UptimeSeconds++
 	for i := range s.Modules {
 		m := &s.Modules[i]
-		if m.ActivatedFlash { m.ActivatedFlash = false; continue }
-		if !m.Installed || !m.Booting { continue }
-		if m.BootTicksRemaining > 0 { m.BootTicksRemaining-- }
-		if m.BootTicksRemaining <= 0 {
-			m.Booting = false
-			m.BootTicksRemaining = 0
-			m.ActivatedFlash = true
-			s.addEvent("module_activated", m.ID+" initialization complete. Module online.", now)
-		}
+		// Activation confirmation clears on the next simulation second. While a
+		// module is booting, its variable-length phase animation owns completion.
+		if m.ActivatedFlash { m.ActivatedFlash = false }
 	}
 	s.Batch.Progress++
 	s.Batch.WindowOpen = false
