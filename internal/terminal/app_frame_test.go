@@ -472,7 +472,7 @@ func TestModuleBootCompletesOnlyWhenDynamicBarFinishes(t *testing.T) {
 	})
 	m := app.state.Module("window_expansion")
 	visual := app.ensureModuleBootAnimation(*m, start)
-	visual.progress = 95
+	visual.progress = 99
 	visual.nextProgressAt = start.Add(time.Hour)
 	visual.nextStatusAt = start
 
