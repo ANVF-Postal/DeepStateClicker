@@ -673,7 +673,8 @@ var (
 	red = lipgloss.Color("#B84B45")
 	amber = lipgloss.Color("#D6B36A")
 	green = lipgloss.Color("#9BC5A0")
-	lineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#42453F"))
+	printerTrackColor = lipgloss.Color("#42453F")
+	lineStyle = lipgloss.NewStyle().Foreground(printerTrackColor)
 	titleStyle = lipgloss.NewStyle().Foreground(ink).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(muted).Italic(true)
 	labelStyle = lipgloss.NewStyle().Foreground(muted)
@@ -1011,6 +1012,13 @@ func printerProgressBar(filled, width int) string {
 	return strings.Repeat("━", filled) + strings.Repeat("┄", width-filled)
 }
 
+func printerDollarColor(batch game.BatchState) lipgloss.Color {
+	if batch.PlayerQueuedDollars > 0 {
+		return amber
+	}
+	return printerTrackColor
+}
+
 func printerEndColor(batch game.BatchState) lipgloss.Color {
 	switch {
 	case batch.PlayerQueuedDollars > 0:
@@ -1018,7 +1026,7 @@ func printerEndColor(batch game.BatchState) lipgloss.Color {
 	case batch.QueuedDollars > 0:
 		return amber
 	default:
-		return muted
+		return printerTrackColor
 	}
 }
 
@@ -1067,8 +1075,7 @@ func (a *App) printPanel(l uiLayout) string {
 	progress := displayProgress*width/game.BatchCycleTicks
 	progress = min(width, max(0, progress))
 	bar := printerProgressBar(progress, width)
-	dollarStyle := lineStyle
-	if a.state.Batch.PlayerQueuedDollars > 0 { dollarStyle = lipgloss.NewStyle().Foreground(amber) }
+	dollarStyle := lipgloss.NewStyle().Foreground(printerDollarColor(a.state.Batch))
 	if endFlashActive {
 		switch a.printerEndFlashColor {
 		case green:
