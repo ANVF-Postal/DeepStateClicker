@@ -41,6 +41,7 @@ type moduleLEDAnimation struct {
 type moduleBootAnimation struct {
 	progress        int
 	statusIndex     int
+	statusMessages  []string
 	nextProgressAt  time.Time
 	nextStatusAt    time.Time
 	progressRandom  uint64
@@ -54,6 +55,24 @@ var bootStatusMessages = []string{
 	"LOADING CONTROL ROUTINES",
 	"RUNNING INTEGRITY CHECK",
 	"FINALIZING MODULE HANDSHAKE",
+	"CHECKING DEVICE REGISTERS",
+	"SYNCING CONTROLLER CLOCK",
+	"VERIFYING MEMORY MAP",
+	"ALLOCATING I/O CHANNELS",
+	"INITIALIZING BUFFER POOLS",
+	"CHECKING THERMAL TELEMETRY",
+	"VALIDATING COMMAND QUEUE",
+	"ESTABLISHING DATA PATH",
+	"REBUILDING DEVICE INDEX",
+	"CHECKING WRITE PROTECTION",
+	"VERIFYING INTERRUPT ROUTING",
+	"STARTING BACKGROUND WORKERS",
+	"TESTING READ/WRITE CHANNEL",
+	"COMMITTING CONFIGURATION",
+	"WAITING FOR CONTROLLER READY",
+	"RUNNING FINAL SELF-TEST",
+	"REGISTERING HARDWARE PROFILE",
+	"CONFIRMING DEVICE IDENTITY",
 }
 
 type App struct {
@@ -1280,21 +1299,22 @@ func randomVisualDelay(seed *uint64, minDelay, maxDelay time.Duration) time.Dura
 	return minDelay + time.Duration(nextVisualRandom(seed)%uint64(steps))*step
 }
 
-// Boot phases usually last a few seconds, with occasional long stalls. The
-// duration is chosen one phase at a time, so total boot time is not predetermined.
+// Each phase lasts at most 1.6 seconds. Even eight phases therefore fit in
+// 12.8 seconds, leaving comfortable headroom under the 15-second target.
 func randomBootPhaseDelay(seed *uint64) time.Duration {
-	switch roll := nextVisualRandom(seed) % 100; {
-	case roll < 18:
-		return randomVisualDelay(seed, 600*time.Millisecond, 1400*time.Millisecond)
-	case roll < 52:
-		return randomVisualDelay(seed, 1500*time.Millisecond, 2800*time.Millisecond)
-	case roll < 78:
-		return randomVisualDelay(seed, 2900*time.Millisecond, 4800*time.Millisecond)
-	case roll < 93:
-		return randomVisualDelay(seed, 4900*time.Millisecond, 7500*time.Millisecond)
-	default:
-		return randomVisualDelay(seed, 7600*time.Millisecond, 14000*time.Millisecond)
+	return randomVisualDelay(seed, 700*time.Millisecond, 1600*time.Millisecond)
+}
+
+// chooseBootStatusSequence shuffles the full message pool, then chooses 4–8
+// entries. A module never repeats a status message during a single boot.
+func chooseBootStatusSequence(seed *uint64) []string {
+	pool := append([]string(nil), bootStatusMessages...)
+	for i := len(pool)-1; i > 0; i-- {
+		j := int(nextVisualRandom(seed) % uint64(i+1))
+		pool[i], pool[j] = pool[j], pool[i]
 	}
+	count := 4 + int(nextVisualRandom(seed)%5)
+	return append([]string(nil), pool[:count]...)
 }
 
 func moduleColorForID(id string) lipgloss.Color {
@@ -1330,6 +1350,7 @@ func (a *App) ensureModuleBootAnimation(m game.ModuleState, now time.Time) *modu
 		// generated as the sequence runs, rather than from a fixed total.
 		progress: 0,
 		statusIndex: 0,
+		statusMessages: chooseBootStatusSequence(&statusRandom),
 		progressRandom: progressRandom,
 		statusRandom: statusRandom,
 	}
@@ -1341,8 +1362,8 @@ func (a *App) ensureModuleBootAnimation(m game.ModuleState, now time.Time) *modu
 
 func (a *App) moduleBootDisplay(m game.ModuleState, now time.Time) (int, string) {
 	animation := a.ensureModuleBootAnimation(m, now)
-	statusIndex := min(len(bootStatusMessages)-1, max(0, animation.statusIndex))
-	return animation.progress, bootStatusMessages[statusIndex]
+	statusIndex := min(len(animation.statusMessages)-1, max(0, animation.statusIndex))
+	return animation.progress, animation.statusMessages[statusIndex]
 }
 
 // advanceModuleBootAnimations is the boot sequence's source of truth. Its total
@@ -1375,21 +1396,24 @@ func (a *App) advanceModuleBootAnimations(now time.Time) {
 		}
 
 		if !now.Before(animation.nextStatusAt) {
-			animation.statusIndex = (animation.statusIndex+1) % len(bootStatusMessages)
-			// A firmware phase transition always produces a visible bar movement.
-			// The size varies independently for every phase.
-			roll := nextVisualRandom(&animation.statusRandom) % 100
-			step := 4 + int(nextVisualRandom(&animation.statusRandom)%5)
-			if roll >= 82 { step += int(nextVisualRandom(&animation.statusRandom)%5) }
-			animation.progress = min(100, animation.progress+step)
-			if animation.progress >= 100 {
+			// Hold each selected status for its full randomized phase. The final
+			// unique message completes the sequence, even if the bar has been
+			// stuttering near 99% for a while.
+			if animation.statusIndex+1 >= len(animation.statusMessages) {
+				animation.progress = 100
 				if err := a.state.CompleteModuleBoot(m.ID, now); err == nil {
-					animation.progress = 100
 					delete(a.moduleBoots, m.ID)
 					delete(a.moduleLEDs, m.ID)
 				}
 				continue
 			}
+			animation.statusIndex++
+			// A firmware phase transition always produces a visible bar movement.
+			// The size varies independently for every phase.
+			roll := nextVisualRandom(&animation.statusRandom) % 100
+			step := 4 + int(nextVisualRandom(&animation.statusRandom)%5)
+			if roll >= 82 { step += int(nextVisualRandom(&animation.statusRandom)%5) }
+			animation.progress = min(99, animation.progress+step)
 			animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
 		}
 	}
