@@ -141,9 +141,19 @@ func TestUpgradeDetailsUseSpacedColoredHeaderAndBottomAnchoredFooter(t *testing.
 	if headerY+2 >= len(lines) || rightText(headerY+2) != "" {
 		t.Fatal("upgrade description should be separated from the title by a blank line")
 	}
-	plainView := strings.Join(strings.Fields(strings.Join(plainViewLines(view), " ")), " ")
-	if !strings.Contains(plainView, "Extends the injection opportunity by") || !strings.Contains(plainView, "second per revision.") {
-		t.Fatalf("wrapped upgrade description should remain visible; normalized view=%q", plainView)
+	var descriptionLines []string
+	for y := headerY + 3; y < len(lines); y++ {
+		text := rightText(y)
+		if strings.HasPrefix(text, "CURRENT REVISION:") {
+			break
+		}
+		if text != "" {
+			descriptionLines = append(descriptionLines, text)
+		}
+	}
+	description := strings.Join(strings.Fields(strings.Join(descriptionLines, " ")), " ")
+	if !strings.Contains(description, "Extends the injection opportunity by") || !strings.Contains(description, "second per revision.") {
+		t.Fatalf("wrapped upgrade description should remain visible in the details pane, got %q", description)
 	}
 	if !strings.Contains(view, "CURRENT REVISION: 00 / 03") || !strings.Contains(view, "SUSPICION PROFILE: 1 / 5") {
 		t.Fatal("revision and suspicion information should be grouped in the details pane")
