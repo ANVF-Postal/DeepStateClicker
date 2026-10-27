@@ -232,6 +232,13 @@ func TestModuleEffectsWaitForDynamicBootCompletionAndReinstallReboots(t *testing
 	if m.Booting { t.Fatal("module should leave booting state when the firmware sequence completes") }
 	if got := moduleLevel(&s, "window_expansion"); got != 1 { t.Fatalf("module effect should activate after boot, got %d", got) }
 	if !m.ActivatedFlash { t.Fatal("activation should show a brief confirmation state") }
+	if want := now.Add(33 * time.Second); !m.ActivatedFlashUntil.Equal(want) {
+		t.Fatalf("activation flash should expire two seconds after boot completion: got %v, want %v", m.ActivatedFlashUntil, want)
+	}
+	s.Advance(now.Add(32 * time.Second))
+	if !m.ActivatedFlash { t.Fatal("activation confirmation should remain visible after one second") }
+	s.Advance(now.Add(33 * time.Second))
+	if m.ActivatedFlash { t.Fatal("activation confirmation should clear after two seconds") }
 	if err := s.RemoveModule("window_expansion", now); err != nil { t.Fatal(err) }
 	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
 	if !m.Booting || m.Level != 1 { t.Fatalf("reinstallation should reboot without losing revision: %#v",m) }
