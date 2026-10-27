@@ -945,6 +945,15 @@ func moduleGain(id string, level int) string {
 
 func (a *App) gameView() string {
 	l := a.layout()
+	footerWidth := max(12, min(l.Width-4, a.width-5))
+	keyboardLines := keyboardControlLines(footerWidth)
+	if a.width < 32 || l.Height < 18 {
+		keyboardLines = []string{"RESIZE / Q QUIT"}
+	}
+	footerRows := len(keyboardLines)
+	panelLayout := l
+	panelLayout.TickerY -= footerRows - 1
+
 	var b strings.Builder
 	b.WriteString(a.newsStripView(max(12, l.Width-4))+"\n")
 	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
@@ -982,22 +991,16 @@ func (a *App) gameView() string {
 	switch a.state.CurrentTab {
 	case game.TabPrint, game.TabStore:
 		switch a.mainView {
-		case "upgrades": panel = a.upgradesPanel(l)
-		case "rack": panel = a.rackPanel(l)
-		default: panel = a.printPanel(l)
+		case "upgrades": panel = a.upgradesPanel(panelLayout)
+		case "rack": panel = a.rackPanel(panelLayout)
+		default: panel = a.printPanel(panelLayout)
 		}
-	case game.TabStorage: panel = a.storagePanel(l)
-	case game.TabMessages: panel = a.messagesPanel(l)
+	case game.TabStorage: panel = a.storagePanel(panelLayout)
+	case game.TabMessages: panel = a.messagesPanel(panelLayout)
 	}
-	// Wrap the keyboard legend to the actual content width. The former single
-	// line was wider than many terminals and got clipped by the outer frame.
-	footerWidth := max(12, min(l.Width-4, a.width-5))
-	keyboardLines := keyboardControlLines(footerWidth)
-	if a.width < 32 || l.Height < 18 {
-		keyboardLines = []string{"RESIZE / Q QUIT"}
-	}
-	footerRows := len(keyboardLines)
-	panelLines := max(4, panelLineLimit(l, a.message != "")-(footerRows-1))
+	// Give the wrapped keyboard legend room at the bottom while preserving pane
+	// borders and scroll ranges above it.
+	panelLines := panelLineLimit(panelLayout, a.message != "")
 	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
 	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message, max(12, l.Width-4)))+"\n") }
