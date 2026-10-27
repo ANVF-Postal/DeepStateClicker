@@ -143,7 +143,7 @@ func TestUpgradeDetailsUseSpacedColoredHeaderAndBottomAnchoredFooter(t *testing.
 	}
 	plainView := strings.Join(strings.Fields(strings.Join(plainViewLines(view), " ")), " ")
 	if !strings.Contains(plainView, "Extends the injection opportunity by") || !strings.Contains(plainView, "second per revision.") {
-		t.Fatal("wrapped upgrade description should remain visible")
+		t.Fatalf("wrapped upgrade description should remain visible; normalized view=%q", plainView)
 	}
 	if !strings.Contains(view, "CURRENT REVISION: 00 / 03") || !strings.Contains(view, "SUSPICION PROFILE: 1 / 5") {
 		t.Fatal("revision and suspicion information should be grouped in the details pane")
