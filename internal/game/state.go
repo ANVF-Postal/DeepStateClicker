@@ -94,6 +94,7 @@ type ModuleState struct {
 	BootTicksTotal int `json:"boot_ticks_total,omitempty"`
 	BootTicksRemaining int `json:"boot_ticks_remaining,omitempty"`
 	ActivatedFlash bool `json:"activated_flash,omitempty"`
+	ActivatedFlashUntil time.Time `json:"activated_flash_until,omitempty"`
 }
 
 type ModuleSpec struct {
@@ -253,6 +254,7 @@ func startModuleBoot(s *State, m *ModuleState) {
 	// Keep the legacy countdown fields at zero for compatibility with old saves.
 	m.Booting = true
 	m.ActivatedFlash = false
+	m.ActivatedFlashUntil = time.Time{}
 	m.BootTicksTotal = 0
 	m.BootTicksRemaining = 0
 }
@@ -269,6 +271,7 @@ func (s *State) CompleteModuleBoot(id string, now time.Time) error {
 	m.BootTicksTotal = 0
 	m.BootTicksRemaining = 0
 	m.ActivatedFlash = true
+	m.ActivatedFlashUntil = now.Add(2 * time.Second)
 	s.addEvent("module_activated", m.ID+" initialization complete. Module online.", now)
 	s.UpdatedAt = now
 	return nil
@@ -332,6 +335,7 @@ func (s *State) PurchaseModule(id string, now time.Time) error {
 	m.BootTicksTotal = 0
 	m.BootTicksRemaining = 0
 	m.ActivatedFlash = false
+	m.ActivatedFlashUntil = time.Time{}
 	if id == "queue_calibration" {
 		s.Upgrades.WindowCalibration = false
 	}
@@ -396,6 +400,8 @@ func (s *State) RemoveModule(id string, now time.Time) error {
 	m.Booting = false
 	m.BootTicksTotal = 0
 	m.BootTicksRemaining = 0
+	m.ActivatedFlash = false
+	m.ActivatedFlashUntil = time.Time{}
 	if id == "queue_calibration" { s.Upgrades.WindowCalibration = false }
 	if id == "auto_injector" { s.Upgrades.PrintAutomation = false }
 	s.addEvent("module_removed", m.ID+" removed from the hardware rack.", now)
@@ -482,9 +488,17 @@ func (s *State) Advance(now time.Time) {
 	s.UptimeSeconds++
 	for i := range s.Modules {
 		m := &s.Modules[i]
-		// Activation confirmation clears on the next simulation second. While a
-		// module is booting, its variable-length phase animation owns completion.
-		if m.ActivatedFlash { m.ActivatedFlash = false }
+		// Keep activation confirmation visible for two real-time seconds.
+		// Old saves may contain the flag without its expiry timestamp; start
+		// their confirmation window when the simulation resumes.
+		if m.ActivatedFlash {
+			if m.ActivatedFlashUntil.IsZero() {
+				m.ActivatedFlashUntil = now.Add(2 * time.Second)
+			} else if !now.Before(m.ActivatedFlashUntil) {
+				m.ActivatedFlash = false
+				m.ActivatedFlashUntil = time.Time{}
+			}
+		}
 	}
 	s.Batch.Progress++
 	s.Batch.WindowOpen = false
