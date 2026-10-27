@@ -16,10 +16,12 @@ func TestExploitOnlyQueuesDuringWindowAndCashArrivesAtBatchCompletion(t *testing
 	if !s.Batch.WindowOpen { t.Fatal("expected exploit window to be open") }
 	before := s.CashOnHand
 	if err := s.QueueExploit(now); err != nil { t.Fatalf("queue exploit: %v", err) }
+	if s.Batch.PlayerQueuedDollars != 1 { t.Fatalf("player injection should be tracked separately, got %d", s.Batch.PlayerQueuedDollars) }
 	if s.CashOnHand != before { t.Fatal("cash must not arrive when instruction is queued") }
 	for s.Batch.Number == 1 { s.Advance(now.Add(time.Duration(s.Tick+1)*time.Second)) }
 	if s.CashOnHand != before+PrintAmount { t.Fatalf("expected cash after batch completion, got %d",s.CashOnHand) }
 	if s.TotalPrinted != PrintAmount { t.Fatalf("expected total printed to increase at completion, got %d",s.TotalPrinted) }
+	if s.Batch.PlayerQueuedDollars != 0 { t.Fatalf("player queue attribution should reset for the next batch, got %d", s.Batch.PlayerQueuedDollars) }
 }
 
 func TestMissedWindowDoesNotQueueMoney(t *testing.T) {
@@ -43,6 +45,7 @@ func TestAutomationQueuesButDoesNotInstantlyPay(t *testing.T) {
 	before:=s.CashOnHand
 	for i:=0;i<ExploitWindowStart;i++ { s.Advance(time.Unix(int64(i+3),0)) }
 	if s.Batch.QueuedDollars!=1 { t.Fatalf("automation should queue one instruction, got %d",s.Batch.QueuedDollars) }
+	if s.Batch.PlayerQueuedDollars != 0 { t.Fatalf("automatic injection must not count as player input, got %d", s.Batch.PlayerQueuedDollars) }
 	if s.CashOnHand!=before { t.Fatal("automation must not pay before batch completion") }
 	for s.Batch.Number==1 { s.Advance(time.Unix(int64(s.Tick+10),0)) }
 	if s.CashOnHand!=before+PrintAmount { t.Fatalf("expected cash on completion, got %d",s.CashOnHand) }
@@ -63,6 +66,41 @@ func TestMessageReplyArrivesAfterActiveTicksAndCharacterRemembers(t *testing.T) 
 	s.Advance(now.Add(time.Duration(delay)*time.Second))
 	if len(s.Messages)!=2 { t.Fatalf("expected delayed reply, got %d messages",len(s.Messages)) }
 	if s.ITSuspicion!=1 { t.Fatalf("character should remember dismissive reply, suspicion=%d",s.ITSuspicion) }
+}
+
+func TestDiscrepancyMessageWaitsForThresholdAndRandomActiveDelay(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.TotalPrinted = 900
+	for i := 0; i < 20; i++ {
+		s.Advance(now.Add(time.Duration(i+1) * time.Second))
+	}
+	if s.EmailUnlocked || s.PendingFirstMessageTicks != 0 {
+		t.Fatal("message should not be scheduled before the discrepancy threshold")
+	}
+
+	s.TotalPrinted = 1_000
+	s.Advance(now.Add(21 * time.Second))
+	if s.EmailUnlocked {
+		t.Fatal("message should not arrive immediately when the threshold is crossed")
+	}
+	if s.PendingFirstMessageTicks < 11 || s.PendingFirstMessageTicks > 44 {
+		t.Fatalf("expected randomized active-time countdown, got %d", s.PendingFirstMessageTicks)
+	}
+	initialDelay := s.PendingFirstMessageTicks
+	for i := 0; i < initialDelay-1; i++ {
+		s.Advance(now.Add(time.Duration(22+i) * time.Second))
+		if s.EmailUnlocked {
+			t.Fatal("message arrived before its countdown completed")
+		}
+	}
+	s.Advance(now.Add(time.Duration(22+initialDelay) * time.Second))
+	if !s.EmailUnlocked || len(s.Messages) != 1 {
+		t.Fatalf("expected discrepancy message after countdown, unlocked=%v messages=%d", s.EmailUnlocked, len(s.Messages))
+	}
+	if s.Batch.Progress == 0 {
+		t.Fatal("message timing should not require a print-cycle boundary")
+	}
 }
 
 func TestSimulationDoesNotAdvanceAfterRunEnds(t *testing.T) {
@@ -109,5 +147,142 @@ func TestWindowCalibrationAddsOnlyOneTick(t *testing.T) {
 	s.Advance(now.Add(time.Duration(ExploitWindowStart+4) * time.Second))
 	if s.Batch.WindowOpen {
 		t.Fatal("calibration should close after exactly one extra tick")
+	}
+}
+
+
+func TestOverflowDoesNotBlockInjectionAndRaisesRisk(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = s.CashCapacity
+	s.Batch.Progress = BatchCycleTicks - 1
+	s.Batch.WindowOpen = true
+	if err := s.QueueExploit(now); err != nil {
+		t.Fatalf("overflow should not block an otherwise valid injection: %v", err)
+	}
+	s.Advance(now.Add(time.Second))
+	if s.CashOnHand != s.CashCapacity+PrintAmount {
+		t.Fatalf("expected cash to exceed capacity, got cash=%d capacity=%d", s.CashOnHand, s.CashCapacity)
+	}
+	if s.Risk < 1 {
+		t.Fatalf("overflow should increase risk, got %d", s.Risk)
+	}
+	if !s.StorageUnlocked {
+		t.Fatal("storage should unlock when capital reaches capacity")
+	}
+}
+
+func TestLockboxesIncreaseCapacityAndClutterReducesEfficiency(t *testing.T) {
+	s := NewState(time.Unix(1, 0))
+	s.CashOnHand = 100_000
+	initialCapacity := s.CashCapacity
+	for i := 0; i < 3; i++ {
+		if err := s.BuyLockbox(time.Unix(int64(i+2), 0)); err != nil { t.Fatal(err) }
+	}
+	if s.CashCapacity != initialCapacity+3*LockboxCapacity {
+		t.Fatalf("first three lockboxes should provide full capacity, got %d", s.CashCapacity)
+	}
+	if s.Risk != 0 { t.Fatalf("ordinary lockboxes should not yet add clutter risk, got %d", s.Risk) }
+	if err := s.BuyLockbox(time.Unix(5, 0)); err != nil { t.Fatal(err) }
+	if s.CashCapacity != initialCapacity+3*LockboxCapacity+350_000 {
+		t.Fatalf("additional lockbox should have diminished capacity, got %d", s.CashCapacity)
+	}
+	if s.Risk != 1 { t.Fatalf("clutter should add risk, got %d", s.Risk) }
+}
+
+func TestRemovedModuleCanBeReinstalledWithoutLosingRevision(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = 10_000
+	if err := s.BuyOrUpgradeModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	if err := s.RemoveModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	s.Normalize()
+	m := s.Module("queue_calibration")
+	if m == nil || m.Installed || s.Upgrades.WindowCalibration {
+		t.Fatalf("removed module should remain disabled after normalization, got module=%#v legacyFlag=%v",m,s.Upgrades.WindowCalibration)
+	}
+	cashAfterPurchase := s.CashOnHand
+	if err := s.BuyOrUpgradeModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	m = s.Module("queue_calibration")
+	if m == nil || !m.Installed || m.Level != 1 {
+		t.Fatalf("expected same revision to be reinstalled, got %#v", m)
+	}
+	if s.CashOnHand != cashAfterPurchase {
+		t.Fatalf("reinstalling should not charge for another revision: before=%d after=%d", cashAfterPurchase, s.CashOnHand)
+	}
+}
+
+
+func TestModuleEffectsWaitForDynamicBootCompletionAndReinstallReboots(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.RandomState = 42
+	s.CashOnHand = 100_000
+	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
+	m := s.Module("window_expansion")
+	if m == nil || !m.Installed || !m.Booting || m.BootTicksTotal != 0 || m.BootTicksRemaining != 0 {
+		t.Fatalf("module should transfer to rack with no pre-defined boot countdown: %#v", m)
+	}
+	if got := moduleLevel(&s, "window_expansion"); got != 0 { t.Fatalf("booting module must not grant effects, got level %d", got) }
+	// Simulation ticks alone do not force a loading animation to finish.
+	for i := 0; i < 30; i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
+	if !m.Booting { t.Fatal("module should remain booting until its dynamic firmware sequence finishes") }
+	if got := moduleLevel(&s, "window_expansion"); got != 0 { t.Fatalf("booting module must not grant effects after elapsed ticks, got %d", got) }
+	if err := s.CompleteModuleBoot("window_expansion", now.Add(31*time.Second)); err != nil { t.Fatal(err) }
+	if m.Booting { t.Fatal("module should leave booting state when the firmware sequence completes") }
+	if got := moduleLevel(&s, "window_expansion"); got != 1 { t.Fatalf("module effect should activate after boot, got %d", got) }
+	if !m.ActivatedFlash { t.Fatal("activation should show a brief confirmation state") }
+	if want := now.Add(33 * time.Second); !m.ActivatedFlashUntil.Equal(want) {
+		t.Fatalf("activation flash should expire two seconds after boot completion: got %v, want %v", m.ActivatedFlashUntil, want)
+	}
+	s.Advance(now.Add(32 * time.Second))
+	if !m.ActivatedFlash { t.Fatal("activation confirmation should remain visible after one second") }
+	s.Advance(now.Add(33 * time.Second))
+	if m.ActivatedFlash { t.Fatal("activation confirmation should clear after two seconds") }
+	if err := s.RemoveModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := s.BuyOrUpgradeModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if !m.Booting || m.Level != 1 { t.Fatalf("reinstallation should reboot without losing revision: %#v",m) }
+}
+func TestUptimePersistsSeparatelyFromSimulationTick(t *testing.T) {
+	now := time.Unix(1,0)
+	s := NewState(now)
+	for i:=0;i<5;i++ { s.Advance(now.Add(time.Duration(i+1)*time.Second)) }
+	if s.UptimeSeconds != 5 || s.Tick != 5 { t.Fatalf("unexpected initial uptime/tick: %d/%d",s.UptimeSeconds,s.Tick) }
+	s.ResetSystemUptime(now.Add(6*time.Second))
+	s.Normalize() // A deliberate reset must remain zero when a save is normalized after loading.
+	if s.UptimeSeconds != 0 { t.Fatalf("system reset should clear uptime, got %d",s.UptimeSeconds) }
+	if s.Tick != 5 { t.Fatalf("system uptime reset must not rewind simulation timers, got tick %d",s.Tick) }
+	s.Advance(now.Add(7*time.Second))
+	if s.UptimeSeconds != 1 || s.Tick != 6 { t.Fatalf("uptime should resume from reset while tick remains cumulative, got %d/%d",s.UptimeSeconds,s.Tick) }
+}
+
+
+func TestPurchaseModuleWaitsForExplicitRackInstallation(t *testing.T) {
+	now := time.Unix(1, 0)
+	s := NewState(now)
+	s.CashOnHand = 100_000
+
+	if err := s.PurchaseModule("window_expansion", now); err != nil {
+		t.Fatalf("purchase module: %v", err)
+	}
+	m := s.Module("window_expansion")
+	if m == nil || m.Level != 1 || m.Installed || m.Booting {
+		t.Fatalf("purchase should leave revision ready but not installed: %#v", m)
+	}
+	if got := moduleLevel(&s, "window_expansion"); got != 0 {
+		t.Fatalf("uninstalled module must not grant effects, got level %d", got)
+	}
+	if s.CashOnHand != 97_500 {
+		t.Fatalf("purchase should charge the base cost, got cash %d", s.CashOnHand)
+	}
+
+	if err := s.InstallModule("window_expansion", now); err != nil {
+		t.Fatalf("install purchased module: %v", err)
+	}
+	if !m.Installed || !m.Booting {
+		t.Fatalf("install should transfer module to rack and start boot: %#v", m)
+	}
+	if got := moduleLevel(&s, "window_expansion"); got != 0 {
+		t.Fatalf("booting module must not grant effects, got level %d", got)
 	}
 }

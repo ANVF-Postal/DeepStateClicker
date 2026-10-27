@@ -9,8 +9,10 @@ import (
 const (
 	InitialCashCapacity int64 = 100_000 // $1,000.00
 	PrintAmount         int64 = 100     // $1.00
-	CapacityUpgradeCost int64 = 2_500   // $25.00
-	CapacityUpgradeTo   int64 = 250_000 // $2,500.00
+	CapacityUpgradeCost int64 = 2_500   // $25.00 (legacy single-box upgrade)
+	CapacityUpgradeTo   int64 = 250_000 // $2,500.00 (legacy save compatibility)
+	LockboxCost         int64 = 2_500   // $25.00
+	LockboxCapacity     int64 = 500_000 // $5,000.00
 	AutomationCost      int64 = 5_000   // $50.00
 
 	BatchCycleTicks = 60
@@ -41,6 +43,7 @@ type Tab string
 const (
 	TabPrint Tab = "PRINT"
 	TabStore Tab = "STORE"
+	TabStorage Tab = "STORAGE"
 	TabMessages Tab = "MESSAGES"
 	TabEmail Tab = TabMessages // compatibility with the early prototype
 )
@@ -69,6 +72,7 @@ type BatchState struct {
 	Number int64 `json:"number"`
 	Progress int `json:"progress_ticks"`
 	QueuedDollars int `json:"queued_dollars"`
+	PlayerQueuedDollars int `json:"player_queued_dollars,omitempty"`
 	Completed int64 `json:"completed_batches"`
 	LastOutcome string `json:"last_outcome"`
 	WindowOpen bool `json:"window_open"`
@@ -81,6 +85,39 @@ type UpgradeState struct {
 	WindowCalibration bool `json:"window_calibration"`
 }
 
+type ModuleState struct {
+	ID string `json:"id"`
+	Level int `json:"level"`
+	Installed bool `json:"installed"`
+	Jammed bool `json:"jammed,omitempty"`
+	Booting bool `json:"booting,omitempty"`
+	BootTicksTotal int `json:"boot_ticks_total,omitempty"`
+	BootTicksRemaining int `json:"boot_ticks_remaining,omitempty"`
+	ActivatedFlash bool `json:"activated_flash,omitempty"`
+	ActivatedFlashUntil time.Time `json:"activated_flash_until,omitempty"`
+}
+
+type ModuleSpec struct {
+	ID string
+	Name string
+	Description string
+	Color string
+	Cost int64
+	MaxLevel int
+	Suspicion int
+}
+
+var ModuleCatalog = []ModuleSpec{
+	{ID:"window_expansion", Name:"WINDOW EXPANSION", Description:"Extends the injection opportunity by one active second per revision.", Color:"#267C6C", Cost:2500, MaxLevel:3, Suspicion:1},
+	{ID:"queue_calibration", Name:"QUEUE CALIBRATION", Description:"Makes the brief opportunity easier to recognize.", Color:"#315E85", Cost:1500, MaxLevel:3, Suspicion:1},
+	{ID:"auto_injector", Name:"AUTOMATIC INJECTOR", Description:"Queues an injection automatically during an available window.", Color:"#6C4B91", Cost:5000, MaxLevel:3, Suspicion:3},
+	{ID:"obfuscation", Name:"SIGNAL OBFUSCATOR", Description:"A future module intended to reduce scrutiny of installed hardware.", Color:"#8A6D2F", Cost:12000, MaxLevel:3, Suspicion:0},
+}
+
+func NewModuleState() []ModuleState {
+	return []ModuleState{{ID:"legacy_controller", Level:1, Installed:true, Jammed:true}}
+}
+
 type State struct {
 	SchemaVersion int `json:"schema_version"`
 	RunID string `json:"run_id"`
@@ -88,20 +125,28 @@ type State struct {
 	CurrentTab Tab `json:"current_tab"`
 	CashOnHand int64 `json:"cash_on_hand_cents"`
 	CashCapacity int64 `json:"cash_capacity_cents"`
+	StorageUnlocked bool `json:"storage_unlocked,omitempty"`
+	LockboxCount int `json:"lockbox_count,omitempty"`
 	TotalPrinted int64 `json:"total_printed_cents"`
 	EstimatedNetWorth int64 `json:"estimated_net_worth_cents"`
 	Risk int `json:"risk"`
 	Tick int64 `json:"tick"`
+	UptimeSeconds int64 `json:"uptime_seconds,omitempty"`
+	UptimeInitialized bool `json:"uptime_initialized,omitempty"`
 	EmailUnlocked bool `json:"email_unlocked"`
 	EmailRead bool `json:"email_read"`
 	Messages []Message `json:"messages,omitempty"`
 	SelectedMessageID string `json:"selected_message_id,omitempty"`
 	PendingReplyTicks int `json:"pending_reply_ticks,omitempty"`
+	PendingFirstMessageTicks int `json:"pending_first_message_ticks,omitempty"`
 	ITPatience int `json:"it_patience"`
 	ITSuspicion int `json:"it_suspicion"`
 	ITReplyCount int `json:"it_reply_count"`
 	Batch BatchState `json:"batch"`
 	Upgrades UpgradeState `json:"upgrades"`
+	Modules []ModuleState `json:"modules,omitempty"`
+	RackSlotsUnlocked int `json:"rack_slots_unlocked,omitempty"`
+	RackJammedRemovals int `json:"rack_jammed_removals,omitempty"`
 	NewsIndex int `json:"news_index"`
 	Events []Event `json:"events"`
 	CreatedAt time.Time `json:"created_at"`
@@ -135,7 +180,9 @@ func NewState(now time.Time) State {
 		RandomState: uint64(now.UnixNano()) ^ 0x9e3779b97f4a7c15,
 		CreatedAt: now,
 		UpdatedAt: now,
+		UptimeInitialized: true,
 		Batch: BatchState{Number: 1, Progress: 0, LastOutcome: "Routine batch cycle active."},
+		Modules: NewModuleState(),
 		Events: []Event{{AtTick: 0, Kind: "discovery", Text: "The discrepancy is real. The exploit is already in place; the queue is moving.", At: now}},
 	}
 	if s.RandomState == 0 { s.RandomState = 1 }
@@ -147,12 +194,37 @@ func (s *State) Normalize() {
 	if s.CurrentTab == "EMAIL" { s.CurrentTab = TabMessages }
 	if s.CurrentTab == "" { s.CurrentTab = TabPrint }
 	if s.CashCapacity == 0 { s.CashCapacity = InitialCashCapacity }
+	if s.LockboxCount < 0 { s.LockboxCount = 0 }
 	if s.Batch.Number == 0 {
 		s.Batch.Number = s.TotalPrinted/PrintAmount + 1
 		s.Batch.Completed = s.Batch.Number - 1
 	}
 	if s.ITPatience == 0 && len(s.Messages) == 0 { s.ITPatience = 3 }
 	if s.RandomState == 0 { s.RandomState = 0x9e3779b97f4a7c15 }
+	if !s.UptimeInitialized {
+		if s.UptimeSeconds == 0 { s.UptimeSeconds = s.Tick }
+		s.UptimeInitialized = true
+	}
+	if len(s.Modules) == 0 { s.Modules = NewModuleState() }
+	if s.RackSlotsUnlocked < 0 { s.RackSlotsUnlocked = 0 }
+	if s.RackJammedRemovals < 0 { s.RackJammedRemovals = 0 }
+	// Older prototype saves allowed the first controller to be removed for
+	// $50 and granted three slots. Convert such saves to the new progression:
+	// one slot unlocked and a second, more expensive obstruction waiting below.
+	if s.RackSlotsUnlocked == 0 && s.RackJammedRemovals == 0 {
+		if legacy := s.Module("legacy_controller"); legacy != nil && legacy.Level > 0 && !legacy.Installed && !legacy.Jammed {
+			s.RackSlotsUnlocked = 1
+			s.RackJammedRemovals = 1
+			legacy.Installed = true
+			legacy.Jammed = true
+		}
+	}
+	for i := range s.Modules {
+		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "queue_calibration" && s.Modules[i].Level > 0 { s.Upgrades.WindowCalibration = true }
+		if s.Modules[i].Installed && !s.Modules[i].Jammed && s.Modules[i].ID == "auto_injector" && s.Modules[i].Level > 0 { s.Upgrades.PrintAutomation = true }
+	}
+	if s.Upgrades.WindowCalibration && s.Module("queue_calibration") == nil { s.Modules = append(s.Modules, ModuleState{ID:"queue_calibration", Level:1, Installed:true}) }
+	if s.Upgrades.PrintAutomation && s.Module("auto_injector") == nil { s.Modules = append(s.Modules, ModuleState{ID:"auto_injector", Level:1, Installed:true}) }
 	if len(s.Messages) == 0 && s.EmailUnlocked {
 		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
 		if s.EmailRead {
@@ -170,14 +242,210 @@ func (s *State) PrintOneDollar(now time.Time) error {
 func (s *State) QueueExploit(now time.Time) error {
 	if s.Status != RunFederal && s.Status != RunSandbox { return errors.New("this run is no longer active") }
 	if !s.Batch.WindowOpen { return ErrWindowClosed }
-	if s.CashOnHand+int64(s.Batch.QueuedDollars+1)*PrintAmount > s.CashCapacity {
-		s.Risk = clamp(s.Risk+1, 0, 100)
-		s.addEvent("overflow_attempt", "The cash drawer is full. You let the opportunity pass.", now)
-		s.UpdatedAt = now
-		return ErrCapacityFull
-	}
 	s.Batch.QueuedDollars++
+	s.Batch.PlayerQueuedDollars++
 	s.Batch.LastOutcome = "An extra print instruction is queued for the active batch."
+	s.UpdatedAt = now
+	return nil
+}
+
+func startModuleBoot(s *State, m *ModuleState) {
+	// The terminal's firmware animation now determines when initialization ends.
+	// Keep the legacy countdown fields at zero for compatibility with old saves.
+	m.Booting = true
+	m.ActivatedFlash = false
+	m.ActivatedFlashUntil = time.Time{}
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+}
+
+// CompleteModuleBoot marks an installed module online after its dynamic firmware
+// sequence finishes. Boot duration is determined by the changing phases, not by
+// a fixed number of simulation ticks.
+func (s *State) CompleteModuleBoot(id string, now time.Time) error {
+	m := s.Module(id)
+	if m == nil || !m.Installed || m.Jammed || !m.Booting {
+		return errors.New("module is not awaiting initialization")
+	}
+	m.Booting = false
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+	m.ActivatedFlash = true
+	m.ActivatedFlashUntil = now.Add(2 * time.Second)
+	s.addEvent("module_activated", m.ID+" initialization complete. Module online.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+// ResetSystemUptime is reserved for genuine system resets (e.g. power loss), not app exits.
+func (s *State) ResetSystemUptime(now time.Time) {
+	s.UptimeSeconds = 0
+	s.addEvent("system_reset", "System uptime reset after a hardware restart.", now)
+	s.UpdatedAt = now
+}
+
+func moduleLevel(s *State, id string) int {
+	for _, m := range s.Modules { if m.ID == id && m.Installed && !m.Jammed && !m.Booting { return m.Level } }
+	return 0
+}
+
+func (s *State) Module(id string) *ModuleState {
+	for i := range s.Modules { if s.Modules[i].ID == id { return &s.Modules[i] } }
+	return nil
+}
+
+// PurchaseModule acquires a module revision without installing it. If a newer
+// revision is purchased for an installed module, the previous hardware is
+// taken offline and the new revision waits for an explicit rack installation.
+func (s *State) PurchaseModule(id string, now time.Time) error {
+	var spec *ModuleSpec
+	for i := range ModuleCatalog {
+		if ModuleCatalog[i].ID == id {
+			spec = &ModuleCatalog[i]
+			break
+		}
+	}
+	if spec == nil {
+		return errors.New("unknown module")
+	}
+	m := s.Module(id)
+	if m != nil && m.Jammed {
+		return errors.New("this module is jammed and must be removed before it can be serviced")
+	}
+	level := 0
+	if m != nil {
+		level = m.Level
+	}
+	if level >= spec.MaxLevel {
+		return ErrUpgradeOwned
+	}
+	cost := spec.Cost * int64(level+1)
+	if s.CashOnHand < cost {
+		return ErrInsufficient
+	}
+	if m == nil {
+		s.Modules = append(s.Modules, ModuleState{ID: id})
+		m = &s.Modules[len(s.Modules)-1]
+	}
+
+	s.CashOnHand -= cost
+	m.Level++
+	m.Installed = false
+	m.Booting = false
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+	m.ActivatedFlash = false
+	m.ActivatedFlashUntil = time.Time{}
+	if id == "queue_calibration" {
+		s.Upgrades.WindowCalibration = false
+	}
+	if id == "auto_injector" {
+		s.Upgrades.PrintAutomation = false
+	}
+	s.addEvent("module_purchase", spec.Name+" revision "+fmt.Sprint(m.Level)+" purchased; awaiting rack installation.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+// InstallModule moves a purchased module into the rack and starts its boot
+// sequence. Effects remain inactive until the boot countdown completes.
+func (s *State) InstallModule(id string, now time.Time) error {
+	m := s.Module(id)
+	if m == nil || m.Level <= 0 {
+		return errors.New("purchase this module in UPGRADES before installing it")
+	}
+	if m.Jammed {
+		return errors.New("this module is jammed and must be removed before it can be serviced")
+	}
+	if m.Installed {
+		return errors.New("module is already installed")
+	}
+	m.Installed = true
+	startModuleBoot(s, m)
+	if id == "queue_calibration" {
+		s.Upgrades.WindowCalibration = true
+	}
+	if id == "auto_injector" {
+		s.Upgrades.PrintAutomation = true
+	}
+	name := id
+	for _, spec := range ModuleCatalog {
+		if spec.ID == id {
+			name = spec.Name
+			break
+		}
+	}
+	s.addEvent("module_installed", name+" installed at revision "+fmt.Sprint(m.Level)+"; initialization started.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+// BuyOrUpgradeModule is retained for compatibility with the early prototype.
+// New UI flows should call PurchaseModule and InstallModule separately.
+func (s *State) BuyOrUpgradeModule(id string, now time.Time) error {
+	if m := s.Module(id); m != nil && m.Level > 0 && !m.Installed && !m.Jammed {
+		return s.InstallModule(id, now)
+	}
+	if err := s.PurchaseModule(id, now); err != nil {
+		return err
+	}
+	return s.InstallModule(id, now)
+}
+
+func (s *State) RemoveModule(id string, now time.Time) error {
+	m := s.Module(id)
+	if m == nil || !m.Installed { return errors.New("module is not installed") }
+	if m.Jammed { return errors.New("module is jammed; safe removal requires a specialist") }
+	m.Installed = false
+	m.Booting = false
+	m.BootTicksTotal = 0
+	m.BootTicksRemaining = 0
+	m.ActivatedFlash = false
+	m.ActivatedFlashUntil = time.Time{}
+	if id == "queue_calibration" { s.Upgrades.WindowCalibration = false }
+	if id == "auto_injector" { s.Upgrades.PrintAutomation = false }
+	s.addEvent("module_removed", m.ID+" removed from the hardware rack.", now)
+	s.UpdatedAt = now
+	return nil
+}
+
+// JammedLegacyRemovalCost returns the next specialist fee in cents. Each
+// obstruction costs $50 more than the one before it.
+func (s *State) JammedLegacyRemovalCost() int64 {
+	removals := max(0, s.RackJammedRemovals)
+	return int64(removals+1) * 5_000
+}
+
+func (s *State) RemoveJammedLegacyModule(now time.Time) error {
+	m := s.Module("legacy_controller")
+	if m == nil || !m.Installed || !m.Jammed { return errors.New("no jammed legacy module is installed") }
+	removalCost := s.JammedLegacyRemovalCost()
+	if s.CashOnHand < removalCost { return ErrInsufficient }
+	s.CashOnHand -= removalCost
+	s.RackSlotsUnlocked++
+	s.RackJammedRemovals++
+
+	// Clearing one seized controller exposes one usable bay, but another
+	// obstruction remains at the end of the rack and costs more to clear.
+	m.Installed = true
+	m.Jammed = true
+	s.addEvent("module_removed", fmt.Sprintf("A specialist clears one seized legacy controller for $%s, unlocking one rack bay. Another obstruction remains.", moneyString(removalCost)), now)
+	s.UpdatedAt = now
+	return nil
+}
+
+func (s *State) BuyLockbox(now time.Time) error {
+	if s.CashOnHand < LockboxCost { return ErrInsufficient }
+	s.CashOnHand -= LockboxCost
+	s.LockboxCount++
+	added := LockboxCapacity
+	if s.LockboxCount > 3 {
+		added = 350_000 // Clutter makes each additional loose box less space-efficient.
+		s.Risk = clamp(s.Risk+1,0,100)
+	}
+	s.CashCapacity += added
+	s.StorageUnlocked = true
+	s.addEvent("storage", fmt.Sprintf("Lockbox %02d added to the apartment. Capacity increased by $%s.",s.LockboxCount,moneyString(added)),now)
 	s.UpdatedAt = now
 	return nil
 }
@@ -217,16 +485,34 @@ func (s *State) BuyWindowCalibration(now time.Time) error {
 func (s *State) Advance(now time.Time) {
 	if s.Status != RunFederal && s.Status != RunSandbox { return }
 	s.Tick++
+	s.UptimeSeconds++
+	for i := range s.Modules {
+		m := &s.Modules[i]
+		// Keep activation confirmation visible for two real-time seconds.
+		// Old saves may contain the flag without its expiry timestamp; start
+		// their confirmation window when the simulation resumes.
+		if m.ActivatedFlash {
+			if m.ActivatedFlashUntil.IsZero() {
+				m.ActivatedFlashUntil = now.Add(2 * time.Second)
+			} else if !now.Before(m.ActivatedFlashUntil) {
+				m.ActivatedFlash = false
+				m.ActivatedFlashUntil = time.Time{}
+			}
+		}
+	}
 	s.Batch.Progress++
 	s.Batch.WindowOpen = false
 	windowStart, windowEnd := ExploitWindowStart, ExploitWindowEnd
-	// Calibration improves recognition, but only adds a very small amount of time.
-	if s.Upgrades.WindowCalibration { windowEnd++ }
+	if level := moduleLevel(s, "window_expansion"); level > 0 { windowEnd += level }
+	if level := moduleLevel(s, "queue_calibration"); level > 0 { windowEnd += level }
+	if s.Upgrades.WindowCalibration && s.Module("queue_calibration") == nil { windowEnd++ }
 	if s.Batch.Progress >= windowStart && s.Batch.Progress <= windowEnd {
 		s.Batch.WindowOpen = true
-		if s.Upgrades.PrintAutomation && s.Batch.QueuedDollars == 0 && s.CashOnHand+PrintAmount <= s.CashCapacity {
-			s.Batch.QueuedDollars = 1
-			s.Batch.LastOutcome = "The calibrated exploit queued an instruction automatically."
+		autoLevel := moduleLevel(s, "auto_injector")
+		if autoLevel == 0 && s.Upgrades.PrintAutomation && s.Module("auto_injector") == nil { autoLevel = 1 }
+		if autoLevel > 0 && s.Batch.QueuedDollars == 0 {
+			s.Batch.QueuedDollars = autoLevel
+			s.Batch.LastOutcome = fmt.Sprintf("The automatic injector queued %d instruction(s).",autoLevel)
 		}
 	}
 	if s.Batch.Progress == windowEnd+1 && s.Batch.QueuedDollars == 0 && !s.Batch.WindowMissed {
@@ -236,15 +522,19 @@ func (s *State) Advance(now time.Time) {
 	if s.Batch.Progress >= BatchCycleTicks {
 		if s.Batch.QueuedDollars > 0 {
 			amount := int64(s.Batch.QueuedDollars) * PrintAmount
-			if s.CashOnHand+amount <= s.CashCapacity {
-				s.CashOnHand += amount
-				s.TotalPrinted += amount
-				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered cash on hand.", s.Batch.Number, moneyString(amount))
-				s.addEvent("batch_complete", s.Batch.LastOutcome, now)
+			beforeOverflow := maxInt64(0,s.CashOnHand-s.CashCapacity)
+			s.CashOnHand += amount
+			s.TotalPrinted += amount
+			afterOverflow := maxInt64(0,s.CashOnHand-s.CashCapacity)
+			newOverflow := afterOverflow-beforeOverflow
+			if newOverflow > 0 {
+				riskAdded := int((newOverflow+99)/100) // Each excess dollar adds exposure, capped by the risk scale.
+				s.Risk = clamp(s.Risk+max(1,riskAdded),0,100)
+				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered capital; capacity exceeded by $%s.",s.Batch.Number,moneyString(amount),moneyString(afterOverflow))
+				s.addEvent("overflow",s.Batch.LastOutcome,now)
 			} else {
-				s.Risk = clamp(s.Risk+2, 0, 100)
-				s.Batch.LastOutcome = "Batch completed, but the excess cash had nowhere safe to go."
-				s.addEvent("overflow", s.Batch.LastOutcome, now)
+				s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. $%s entered capital on hand.", s.Batch.Number, moneyString(amount))
+				s.addEvent("batch_complete", s.Batch.LastOutcome, now)
 			}
 		} else {
 			s.Batch.LastOutcome = fmt.Sprintf("Batch %05d completed. No extra instruction was sent.", s.Batch.Number)
@@ -253,14 +543,25 @@ func (s *State) Advance(now time.Time) {
 		s.Batch.Number++
 		s.Batch.Progress = 0
 		s.Batch.QueuedDollars = 0
+		s.Batch.PlayerQueuedDollars = 0
 		s.Batch.WindowOpen = false
 		s.Batch.WindowMissed = false
 	}
-	if s.TotalPrinted >= 1_000 && !s.EmailUnlocked {
-		s.EmailUnlocked = true
-		s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
-		s.addEvent("message_received", "A new message has arrived in your internal inbox.", now)
+	// The first discrepancy becomes visible only after enough unrecorded cash
+	// has actually cleared a batch. Delivery is then delayed by a seeded,
+	// active-time countdown rather than tied to the next batch boundary.
+	if s.TotalPrinted >= 1_000 && !s.EmailUnlocked && s.PendingFirstMessageTicks == 0 {
+		s.PendingFirstMessageTicks = 12 + s.randomInt(34) // 12–45 active seconds
 	}
+	if s.PendingFirstMessageTicks > 0 {
+		s.PendingFirstMessageTicks--
+		if s.PendingFirstMessageTicks == 0 && !s.EmailUnlocked && s.TotalPrinted >= 1_000 {
+			s.EmailUnlocked = true
+			s.addITMessage("Print reconciliation discrepancy", "Hi,\n\nI'm reviewing the reconciliation from the last print cycle. One count doesn't line up with the expected record. Could you take a look with me before end of day?\n\n— IT Operations", []string{"It may be a routine variance. I'll review the records.", "I can help review it. Which batch are you looking at?", "Leave it with me; I'll get back to you."})
+			s.addEvent("message_received", "A new message has arrived in your internal inbox.", now)
+		}
+	}
+	if s.CashCapacity > 0 && s.CashOnHand*100 >= s.CashCapacity*80 { s.StorageUnlocked = true }
 	if s.Tick%30 == 0 { s.Risk = clamp(s.Risk+1, 0, 100) }
 	s.advanceMail(now)
 	// Net worth is an estimate, not spendable cash.
@@ -272,7 +573,8 @@ func (s *State) Advance(now time.Time) {
 
 func (s *State) OpenTab(tab Tab) error {
 	if tab == TabMessages && !s.EmailUnlocked { return errors.New("MESSAGES is not available yet") }
-	if tab != TabPrint && tab != TabStore && tab != TabMessages { return errors.New("unknown tab") }
+	if tab == TabStorage && !s.StorageUnlocked { return errors.New("STORAGE is not available yet") }
+	if tab != TabPrint && tab != TabStore && tab != TabStorage && tab != TabMessages { return errors.New("unknown tab") }
 	s.CurrentTab = tab
 	return nil
 }
@@ -391,6 +693,8 @@ func (s *State) addEvent(kind, text string, now time.Time) {
 }
 
 func moneyString(cents int64) string { return fmt.Sprintf("%d.%02d", cents/100, cents%100) }
+
+func maxInt64(a,b int64) int64 { if a>b { return a }; return b }
 
 func clamp(n, min, max int) int {
 	if n < min { return min }

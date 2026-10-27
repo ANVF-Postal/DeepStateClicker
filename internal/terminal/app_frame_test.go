@@ -1,0 +1,995 @@
+package terminal
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"deepstateclicker/internal/game"
+)
+
+func TestViewUsesStableTerminalFrameAcrossPanels(t *testing.T) {
+	app := New(game.NewState(time.Now()))
+	app.width, app.height = 100, 31
+
+	cases := []struct {
+		name string
+		set  func()
+	}{
+		{
+			name: "main",
+			set: func() {
+				app.screen = screenGame
+				app.state.CurrentTab = game.TabPrint
+				app.mainView = "print"
+			},
+		},
+		{
+			name: "upgrades",
+			set: func() {
+				app.screen = screenGame
+				app.state.CurrentTab = game.TabPrint
+				app.mainView = "upgrades"
+			},
+		},
+		{
+			name: "rack",
+			set: func() {
+				app.screen = screenGame
+				app.state.CurrentTab = game.TabPrint
+				app.mainView = "rack"
+			},
+		},
+		{
+			name: "storage",
+			set: func() {
+				app.screen = screenGame
+				app.state.StorageUnlocked = true
+				app.state.CurrentTab = game.TabStorage
+			},
+		},
+		{
+			name: "menu",
+			set: func() { app.screen = screenMenu },
+		},
+	}
+
+	const wantWidth = 99
+	const wantHeight = 30
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.set()
+			lines := strings.Split(app.View(), "\n")
+			if len(lines) != wantHeight {
+				t.Fatalf("frame has %d rows; want %d", len(lines), wantHeight)
+			}
+			for row, line := range lines {
+				if got := lipgloss.Width(line); got != wantWidth {
+					t.Errorf("row %d has width %d; want %d", row, got, wantWidth)
+				}
+			}
+		})
+	}
+}
+
+
+func TestStableFrameHardClipsWithoutEdgeEllipsis(t *testing.T) {
+	view := stableTerminalFrame("first row is too long\nsecond row is too long", 12, 2)
+	lines := plainViewLines(view)
+	if len(lines) != 2 {
+		t.Fatalf("frame has %d rows; want 2", len(lines))
+	}
+	for row, line := range lines {
+		if got := lipgloss.Width(line); got != 12 {
+			t.Errorf("row %d has width %d; want 12: %q", row, got, line)
+		}
+		if strings.HasSuffix(strings.TrimRight(line, " "), "…") {
+			t.Errorf("emergency frame clipping should not stamp an ellipsis on row %d: %q", row, line)
+		}
+	}
+}
+
+func TestNarrowMainViewKeepsKeyboardControlsVisible(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 60, 24
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "print"
+
+	lines := plainViewLines(app.View())
+	view := strings.Join(lines, "\n")
+	for _, hint := range []string{
+		"X/P inject", "U upgrades", "R rack", "S main", "T storage",
+		"M messages", "1–3 reply", "V save", "H help", "Q quit",
+	} {
+		if !strings.Contains(view, hint) {
+			t.Errorf("narrow terminal view should keep keyboard hint %q visible", hint)
+		}
+	}
+	if len(lines) < 4 || !strings.Contains(strings.Join(lines[len(lines)-4:], "\n"), "Q quit") {
+		t.Fatal("keyboard controls should remain visible at the bottom of the frame")
+	}
+	for row, line := range lines {
+		if got := lipgloss.Width(line); got != 59 {
+			t.Errorf("row %d has width %d; want 59", row, got)
+		}
+		if strings.HasSuffix(strings.TrimRight(line, " "), "…") {
+			t.Errorf("narrow view should not end a frame row with a clipping ellipsis: row %d: %q", row, line)
+		}
+	}
+}
+
+func TestTruncateDoesNotLeakPartialTrueColorSequences(t *testing.T) {
+	input := "\x1b[38;2;119;121;112mAVAILABLE\x1b[0m"
+	got := truncate(input, 6)
+	plain := ansiSequences.ReplaceAllString(got, "")
+	if plain != "AVAIL…" {
+		t.Fatalf("visible truncated text = %q; want %q", plain, "AVAIL…")
+	}
+	if strings.Contains(got, ">38;2") || strings.Contains(got, ";121;112m") && !strings.Contains(got, "\x1b[38;2;119;121;112m") {
+		t.Fatalf("truncation leaked part of a colour escape sequence: %q", got)
+	}
+	if width := lipgloss.Width(got); width > 6 {
+		t.Fatalf("truncated text is %d cells wide; want <= 6", width)
+	}
+}
+
+func TestUpgradeCatalogueOmitsAvailableStatusColumn(t *testing.T) {
+	app := New(game.NewState(time.Now()))
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "upgrades"
+	lines := plainViewLines(app.upgradesPanel(app.layout()))
+	for i, line := range lines {
+		if i == 0 {
+			continue // The pane title is MODULE CATALOG, not a status column.
+		}
+		if strings.Contains(line, " AVAILABLE") || strings.Contains(line, " LOCKED") {
+			t.Fatalf("upgrade catalogue still contains an inline status tag: %q", line)
+		}
+	}
+}
+
+
+func TestUpgradeDetailsUseSpacedColoredHeaderAndBottomAnchoredFooter(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "upgrades"
+
+	view := app.upgradesPanel(app.layout())
+	lines := plainViewLines(view)
+	leftWidth, rightWidth := paneWidths(app.layout())
+	rightStart := leftWidth + 1
+	rightText := func(y int) string {
+		cells := []rune(lines[y])
+		start, end := rightStart+1, min(len(cells), rightStart+rightWidth-1)
+		if start >= end { return "" }
+		return strings.TrimSpace(string(cells[start:end]))
+	}
+	headerY := -1
+	for y := range lines {
+		if rightText(y) == "WINDOW EXPANSION" {
+			headerY = y
+			break
+		}
+	}
+	if headerY < 0 {
+		t.Fatal("selected upgrade name should appear in the details pane")
+	}
+	if headerY+1 >= len(lines) || rightText(headerY+1) != strings.Repeat("-", len("WINDOW EXPANSION")) {
+		t.Fatal("upgrade title should have a matching hyphen underline")
+	}
+	if headerY+2 >= len(lines) || rightText(headerY+2) != "" {
+		t.Fatal("upgrade description should be separated from the title by a blank line")
+	}
+	var descriptionLines []string
+	for y := headerY + 3; y < len(lines); y++ {
+		text := rightText(y)
+		if strings.HasPrefix(text, "CURRENT REVISION:") {
+			break
+		}
+		if text != "" {
+			descriptionLines = append(descriptionLines, text)
+		}
+	}
+	description := strings.Join(strings.Fields(strings.Join(descriptionLines, " ")), " ")
+	if !strings.Contains(description, "Extends the injection opportunity by") || !strings.Contains(description, "second per revision.") {
+		t.Fatalf("wrapped upgrade description should remain visible in the details pane, got %q", description)
+	}
+	if !strings.Contains(view, "CURRENT REVISION: 00 / 03") || !strings.Contains(view, "SUSPICION PROFILE: 1 / 5") {
+		t.Fatal("revision and suspicion information should be grouped in the details pane")
+	}
+	if !strings.Contains(view, "[UPGRADE]") {
+		t.Fatal("purchase control should use the concise UPGRADE label")
+	}
+	if !strings.Contains(lines[len(lines)-2], "[R] HARDWARE RACK") {
+		t.Fatalf("navigation hint should be anchored at the bottom of the right pane, got %q", lines[len(lines)-2])
+	}
+}
+
+func TestUpgradeAcquisitionCostReflectsAffordability(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "upgrades"
+
+	app.state.CashOnHand = 100_000
+	view := app.upgradesPanel(app.layout())
+	if !strings.Contains(view, lipgloss.NewStyle().Foreground(green).Bold(true).Render("$25.00")) {
+		t.Fatal("affordable acquisition cost should be highlighted in green")
+	}
+
+	app.state.CashOnHand = 0
+	view = app.upgradesPanel(app.layout())
+	if !strings.Contains(view, lipgloss.NewStyle().Foreground(red).Bold(true).Render("$25.00")) {
+		t.Fatal("unaffordable acquisition cost should be highlighted in red")
+	}
+}
+
+func TestUppercaseRackShortcutAndMainRackClick(t *testing.T) {
+	app := New(game.NewState(time.Now()))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.Modules = append(app.state.Modules, game.ModuleState{
+		ID: "queue_calibration", Level: 1, Installed: true,
+	})
+	app.mainView = "upgrades"
+
+	app.handleGameKey("R")
+	if app.mainView != "rack" {
+		t.Fatalf("uppercase R left main view at %q; want rack", app.mainView)
+	}
+
+	app.mainView = "print"
+	lines := plainViewLines(app.View())
+	for y, line := range lines {
+		x := cellOffset(line, "[R] HARDWARE RACK")
+		if x >= 0 {
+			app.handleMouse(x, y)
+			if app.mainView != "rack" {
+				t.Fatalf("clicking rack label left main view at %q; want rack", app.mainView)
+			}
+			return
+		}
+	}
+	t.Fatal("main view did not render the hardware rack label")
+}
+
+
+func rackLine(t *testing.T, app *App, contains string) (int, string) {
+	t.Helper()
+	lines := plainViewLines(app.View())
+	for y, line := range lines {
+		if strings.Contains(line, contains) {
+			return y, line
+		}
+	}
+	t.Fatalf("could not find %q in rack view", contains)
+	return -1, ""
+}
+
+func TestModulePurchaseWaitsInUpgradesUntilRackInstall(t *testing.T) {
+	now := time.Unix(1, 0)
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	app.mainView = "upgrades"
+	app.selectedUpgrade = 0
+
+	app.buySelectedModule(now)
+	m := app.state.Module("window_expansion")
+	if m == nil || m.Level != 1 || m.Installed || m.Booting {
+		t.Fatalf("purchase should be owned but not installed or booting: %#v", m)
+	}
+	if app.mainView != "upgrades" {
+		t.Fatalf("purchase changed screen to %q; want upgrades", app.mainView)
+	}
+	if !app.hasReadyModules() {
+		t.Fatal("purchased, uninstalled module should trigger rack-ready state")
+	}
+}
+
+func TestUpgradeBuyButtonRequiresSecondClick(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	app.mainView = "upgrades"
+	app.selectedUpgrade = 0
+
+	y, line := rackLine(t, app, "[UPGRADE]")
+	x := cellOffset(line, "[UPGRADE]")
+	app.handleMouse(x, y)
+	if app.state.Module("window_expansion") != nil {
+		t.Fatal("first click should only arm the purchase")
+	}
+	y, line = rackLine(t, app, "[CONFIRM UPGRADE]")
+	x = cellOffset(line, "[CONFIRM UPGRADE]")
+	app.handleMouse(x, y)
+	m := app.state.Module("window_expansion")
+	if m == nil || m.Level != 1 || m.Installed {
+		t.Fatalf("confirmed purchase should be ready but uninstalled: %#v", m)
+	}
+	if app.mainView != "upgrades" {
+		t.Fatalf("confirmed purchase changed screen to %q; want upgrades", app.mainView)
+	}
+}
+
+func TestRackCatalogueSelectThenClickInstallsAndSymbolRemoves(t *testing.T) {
+	now := time.Unix(1, 0)
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil {
+		t.Fatal(err)
+	}
+	app.mainView = "rack"
+	app.rackCatalogSelected = false
+
+	headerY, _ := rackLine(t, app, "┌─ MODULES")
+	y := headerY + 1
+	_, line := rackLine(t, app, "WINDOW EXPANSION")
+	nameX := cellOffset(line, "WINDOW EXPANSION")
+	app.handleMouse(nameX, y)
+	m := app.state.Module("window_expansion")
+	if !app.rackCatalogSelected || m.Installed {
+		t.Fatalf("first row click should select without installing: selected=%v module=%#v", app.rackCatalogSelected, m)
+	}
+	if !strings.Contains(plainViewLines(app.View())[y], "[WINDOW EXPANSION]") {
+		t.Fatal("selected module name should be enclosed in square brackets")
+	}
+
+	// Clicking the selected row a second time installs the module.
+	app.handleMouse(nameX, y)
+	if !m.Installed || !m.Booting {
+		t.Fatalf("second row click should install and start boot: %#v", m)
+	}
+	if strings.Contains(rackLeftPaneText(t, app), "WINDOW EXPANSION") {
+		t.Fatal("installed module should leave the ready-to-install list")
+	}
+
+	// Installed hardware is removed from its rack card, then returns to the
+	// left pane as owned hardware ready for reinstallation.
+	y, line = rackLineWithContext(t, app, "WINDOW EXPANSION", "[X]")
+	x := cellOffset(line, "[X]")
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
+	if m.Installed {
+		t.Fatalf("clicking the rack card X should remove the module: %#v", m)
+	}
+	if !strings.Contains(rackLeftPaneText(t, app), "WINDOW EXPANSION") {
+		t.Fatal("removed module should return to the ready-to-install list")
+	}
+}
+
+func (a *App) paneLeftSymbolX() int {
+	leftWidth, _ := paneWidths(a.layout())
+	return leftWidth
+}
+
+func rackLineWithContext(t *testing.T, app *App, target, context string) (int, string) {
+	t.Helper()
+	lines := plainViewLines(app.View())
+	for y, line := range lines {
+		if strings.Contains(line, target) && strings.Contains(line, context) {
+			return y, line
+		}
+	}
+	t.Fatalf("could not find target %q with context %q in rack view", target, context)
+	return -1, ""
+}
+
+func TestRackRightModuleXRemovesModule(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	now := time.Unix(1, 0)
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil { t.Fatal(err) }
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := app.state.InstallModule("window_expansion", now); err != nil { t.Fatal(err) }
+	app.mainView = "rack"
+	app.rackFocusRight = true
+	app.selectRackModule("window_expansion")
+
+	y, line := rackLineWithContext(t, app, "WINDOW EXPANSION", "[X]")
+	x := cellOffset(line, "[X]")
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
+	if m := app.state.Module("window_expansion"); m.Installed {
+		t.Fatalf("clicking the actual module X should remove it: %#v (x=%d y=%d line=%q)", m, x, y, line)
+	}
+}
+
+func TestLegacyRemovalButtonRequiresSecondClick(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 10_000
+	app.mainView = "rack"
+	// The jammed module is the bottom bay. Scroll the rack viewport to it.
+	app.rackRightScroll = len(app.rackBays())-visibleRackBays(max(4,panelLineLimit(app.layout(),false)-2))
+	app.rackRightScroll = max(0,app.rackRightScroll)
+
+	y, line := rackLine(t, app, "$50 - [REMOVE]")
+	x := cellOffset(line, "[REMOVE]")
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
+	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed {
+		t.Fatalf("first click must only arm the actual specialist button: %#v (line=%q)", m, line)
+	}
+	if app.rackRemovalArmedModule != "legacy_controller" {
+		t.Fatalf("first click should arm specialist removal, got %q", app.rackRemovalArmedModule)
+	}
+
+	y, line = rackLine(t, app, "$50 - [REMOVE]")
+	x = cellOffset(line, "[REMOVE]")
+	app.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y})
+	if m := app.state.Module("legacy_controller"); m == nil || !m.Installed || !m.Jammed {
+		t.Fatalf("confirming removal should reveal the next jammed controller at the bottom: %#v (line=%q)", m, line)
+	}
+	if app.state.CashOnHand != 5_000 {
+		t.Fatalf("first specialist removal should cost $50, cash=%d", app.state.CashOnHand)
+	}
+	if app.state.RackSlotsUnlocked != 1 || app.state.RackJammedRemovals != 1 {
+		t.Fatalf("first removal should unlock exactly one bay and advance the price tier: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
+	}
+	if _, line := rackLine(t, app, "LEGACY PRINT CONTROLLER 02"); !strings.Contains(line, "LEGACY PRINT CONTROLLER 02") {
+		t.Fatalf("next blocker should be numbered: %q", line)
+	}
+	if _, line := rackLine(t, app, "$100 - [REMOVE]"); !strings.Contains(line, "$100 - [REMOVE]") {
+		t.Fatalf("next blocker should cost $100: %q", line)
+	}
+	if app.rackRemovalArmedModule != "" {
+		t.Fatalf("confirmation should clear armed removal, got %q", app.rackRemovalArmedModule)
+	}
+}
+
+
+func TestRackModuleCardsKeepFixedEnclosureHeight(t *testing.T) {
+	inner := 42
+	installed := game.ModuleState{ID: "window_expansion", Level: 1, Installed: true}
+	booting := installed
+	booting.Booting = true
+	booting.BootTicksTotal = 10
+	booting.BootTicksRemaining = 4
+	jammed := game.ModuleState{ID: "legacy_controller", Level: 1, Installed: true, Jammed: true}
+
+	for _, tc := range []struct {
+		name string
+		module game.ModuleState
+		want string
+	}{
+		{name: "operational", module: installed, want: "WINDOW EXPANSION"},
+		{name: "booting", module: booting, want: "WINDOW EXPANSION"},
+		{name: "jammed legacy", module: jammed, want: "JAMMED - SPECIALIST REMOVAL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "WINDOW EXPANSION"
+			if tc.module.ID == "legacy_controller" {
+				name = "LEGACY PRINT CONTROLLER"
+			}
+			lines := rackModuleCard(tc.module, name, inner, 5_000, false, 4, 35, "CALIBRATING TIMING BUS", true)
+			if len(lines) != rackBayHeight {
+				t.Fatalf("module card has %d rows; want %d", len(lines), rackBayHeight)
+			}
+			if strings.Contains(ansiSequences.ReplaceAllString(lines[0], ""), name) {
+				t.Fatalf("module title should be inside the enclosure, not interrupt the top border: %q", lines[0])
+			}
+			if !strings.Contains(ansiSequences.ReplaceAllString(strings.Join(lines, "\n"), ""), tc.want) {
+				t.Fatalf("module card does not show expected text %q: %q", tc.want, lines)
+			}
+			for row, line := range lines {
+				if got := lipgloss.Width(line); got != inner+2 {
+					t.Errorf("row %d has width %d; want %d", row, got, inner+2)
+				}
+			}
+			if tc.name == "operational" {
+				if !strings.Contains(ansiSequences.ReplaceAllString(lines[4], ""), ".") {
+					t.Fatal("operational module should have a status LED in the reserved activity row")
+				}
+				wantEdge := lipgloss.NewStyle().Foreground(moduleColorForID(tc.module.ID)).Render("│")
+				if !strings.HasSuffix(lines[4], wantEdge) {
+					t.Fatalf("right enclosure edge beside the LED should retain the module color: got %q, want styled suffix %q", lines[4], wantEdge)
+				}
+			}
+			if tc.name == "jammed legacy" {
+				plain := ansiSequences.ReplaceAllString(strings.Join(lines, "\n"), "")
+				if strings.Contains(plain, "REV") {
+					t.Fatal("jammed legacy module should not display a revision line")
+				}
+				if !strings.Contains(plain, "$50 - [REMOVE]") {
+					t.Fatal("jammed legacy module should display the specialist removal control")
+				}
+				wantEdge := orangeRackStyle(false).Render("│")
+				if !strings.HasSuffix(lines[4], wantEdge) {
+					t.Fatalf("right enclosure edge beside [REMOVE] should retain the jammed module color: got %q, want styled suffix %q", lines[4], wantEdge)
+				}
+			}
+		})
+	}
+}
+
+
+func TestRackModuleLEDsUseIndependentBlinkSequences(t *testing.T) {
+	start := time.Unix(100, 0)
+	app := New(game.NewState(start))
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "rack"
+
+	for _, id := range []string{"window_expansion", "queue_calibration"} {
+		app.state.Modules = append(app.state.Modules, game.ModuleState{
+			ID: id, Level: 1, Installed: true,
+		})
+	}
+
+	var first, second strings.Builder
+	for i := 0; i < 40; i++ {
+		now := start.Add(time.Duration(i) * 100 * time.Millisecond)
+		app.advanceRackAnimations(now)
+		if app.moduleLEDs["window_expansion"].on { first.WriteByte('1') } else { first.WriteByte('0') }
+		if app.moduleLEDs["queue_calibration"].on { second.WriteByte('1') } else { second.WriteByte('0') }
+	}
+	if first.String() == second.String() {
+		t.Fatalf("module LED patterns should not be synchronized: both produced %q", first.String())
+	}
+	if app.moduleLEDs["window_expansion"].random == app.moduleLEDs["queue_calibration"].random {
+		t.Fatal("each module should keep its own random stream for blink timing")
+	}
+}
+
+func TestModuleBootStatusTransitionMovesBarAndHasIndependentDwell(t *testing.T) {
+	start := time.Unix(200, 0)
+	app := New(game.NewState(start))
+	app.state.Modules = append(app.state.Modules, game.ModuleState{
+		ID: "window_expansion", Level: 1, Installed: true, Booting: true,
+	})
+	m := app.state.Module("window_expansion")
+	if m == nil { t.Fatal("missing window expansion module") }
+
+	visual := app.ensureModuleBootAnimation(*m, start)
+	progressBefore, statusBefore := visual.progress, visual.statusIndex
+	visual.nextProgressAt = start.Add(time.Hour)
+	visual.nextStatusAt = start
+	app.advanceModuleBootAnimations(start)
+	if visual.statusIndex == statusBefore {
+		t.Fatal("firmware phase should change when its own dwell timer expires")
+	}
+	if visual.progress <= progressBefore {
+		t.Fatalf("status transition should visibly move the loading bar: before=%d after=%d", progressBefore, visual.progress)
+	}
+	if visual.progress != visual.progressMilestones[visual.statusIndex] {
+		t.Fatalf("status transition should land on its randomized checkpoint: got %d, want %d", visual.progress, visual.progressMilestones[visual.statusIndex])
+	}
+
+	statusWhileHeld := visual.statusIndex
+	progressBefore = visual.progress
+	visual.nextProgressAt = start
+	visual.nextStatusAt = start.Add(time.Hour)
+	for i := 1; i <= 50; i++ {
+		app.advanceModuleBootAnimations(start.Add(time.Duration(i) * 100 * time.Millisecond))
+	}
+	if visual.progress <= progressBefore {
+		t.Fatalf("the bar should also be able to creep independently during a phase, progress stayed at %d", visual.progress)
+	}
+	if visual.statusIndex != statusWhileHeld {
+		t.Fatal("firmware text changed even though its long phase dwell timer was held")
+	}
+}
+
+
+func TestModuleBootStatusSequenceHasFourToEightUniqueMessages(t *testing.T) {
+	for seedValue := uint64(1); seedValue <= 200; seedValue++ {
+		seed := seedValue
+		messages := chooseBootStatusSequence(&seed)
+		if len(messages) < 4 || len(messages) > 8 {
+			t.Fatalf("seed %d produced %d messages, want 4–8", seedValue, len(messages))
+		}
+		seen := make(map[string]bool, len(messages))
+		for _, message := range messages {
+			if seen[message] { t.Fatalf("seed %d repeated status %q", seedValue, message) }
+			seen[message] = true
+		}
+	}
+}
+
+func TestModuleBootPhaseDelayCannotExceed1600Milliseconds(t *testing.T) {
+	for seedValue := uint64(1); seedValue <= 200; seedValue++ {
+		seed := seedValue
+		delay := randomBootPhaseDelay(&seed)
+		if delay < 700*time.Millisecond || delay > 1600*time.Millisecond {
+			t.Fatalf("seed %d produced phase delay %s outside 700ms–1.6s", seedValue, delay)
+		}
+	}
+}
+
+func TestModuleBootProgressMilestonesCreateOrganicVariedCurves(t *testing.T) {
+	sawEarlyLaunch := false
+	sawCrawlThenSurge := false
+
+	for seedValue := uint64(1); seedValue <= 300; seedValue++ {
+		seed := seedValue
+		phaseCount := 4 + int(seedValue%5)
+		curve := chooseBootProgressMilestones(&seed, phaseCount)
+		if len(curve) != phaseCount {
+			t.Fatalf("seed %d produced %d checkpoints, want %d", seedValue, len(curve), phaseCount)
+		}
+		if curve[0] != 0 {
+			t.Fatalf("seed %d should start at 0%%, got %d%%", seedValue, curve[0])
+		}
+		if curve[len(curve)-1] < 94 || curve[len(curve)-1] > 97 {
+			t.Fatalf("seed %d should leave a slow approach from the low-to-mid 90s, got %d%%", seedValue, curve[len(curve)-1])
+		}
+
+		largestJump := 0
+		for i := 1; i < len(curve); i++ {
+			if curve[i] <= curve[i-1] {
+				t.Fatalf("seed %d checkpoints must rise strictly: %v", seedValue, curve)
+			}
+			if jump := curve[i] - curve[i-1]; jump > largestJump {
+				largestJump = jump
+			}
+		}
+		if largestJump < 20 {
+			t.Fatalf("seed %d lacks a meaningful surge: %v", seedValue, curve)
+		}
+
+		if curve[1] >= 40 {
+			sawEarlyLaunch = true
+		}
+		if curve[1] <= 10 && largestJump >= 20 {
+			sawCrawlThenSurge = true
+		}
+	}
+
+	if !sawEarlyLaunch {
+		t.Fatal("random curves should include an early high-speed launch")
+	}
+	if !sawCrawlThenSurge {
+		t.Fatal("random curves should include an opening crawl followed by a major surge")
+	}
+}
+
+func TestModuleBootCompletesOnlyWhenDynamicBarFinishes(t *testing.T) {
+	start := time.Unix(300, 0)
+	app := New(game.NewState(start))
+	app.state.Modules = append(app.state.Modules, game.ModuleState{
+		ID: "window_expansion", Level: 1, Installed: true, Booting: true,
+	})
+	m := app.state.Module("window_expansion")
+	visual := app.ensureModuleBootAnimation(*m, start)
+	visual.progress = 99
+	visual.statusIndex = len(visual.statusMessages)-1
+	visual.nextProgressAt = start.Add(time.Hour)
+	visual.nextStatusAt = start
+
+	app.advanceModuleBootAnimations(start)
+	if m.Booting { t.Fatal("phase transition should complete boot when it moves the bar to 100%") }
+	if !m.ActivatedFlash { t.Fatal("completed boot should display the activation flash") }
+
+	if visual.progress != 100 { t.Fatalf("completed bar should read 100%%, got %d%%", visual.progress) }
+}
+func TestRemovingLegacyControllerUnlocksOneBayAndEscalatesTheNextFee(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	before := app.rackBays()
+	if len(before) != 1 || before[0] == nil || !before[0].Jammed {
+		t.Fatalf("the initial rack should contain only the bottom jammed controller: %#v", before)
+	}
+
+	app.state.CashOnHand = 50_000
+	if err := app.state.RemoveJammedLegacyModule(time.Unix(2, 0)); err != nil {
+		t.Fatalf("remove first jammed controller: %v", err)
+	}
+	first := app.rackBays()
+	if len(first) != 2 || first[0] != nil || first[1] == nil || !first[1].Jammed {
+		t.Fatalf("first removal should produce one empty bay above the next jammed controller: %#v", first)
+	}
+	if app.state.RackSlotsUnlocked != 1 || app.state.RackJammedRemovals != 1 {
+		t.Fatalf("first removal should unlock exactly one slot: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
+	}
+	if app.state.CashOnHand != 45_000 || app.state.JammedLegacyRemovalCost() != 10_000 {
+		t.Fatalf("first removal should cost $50 and make the next fee $100: cash=%d nextFee=%d", app.state.CashOnHand, app.state.JammedLegacyRemovalCost())
+	}
+
+	if err := app.state.RemoveJammedLegacyModule(time.Unix(3, 0)); err != nil {
+		t.Fatalf("remove second jammed controller: %v", err)
+	}
+	second := app.rackBays()
+	if len(second) != 3 || second[0] != nil || second[1] != nil || second[2] == nil || !second[2].Jammed {
+		t.Fatalf("second removal should produce two empty bays above the next jammed controller: %#v", second)
+	}
+	if app.state.RackSlotsUnlocked != 2 || app.state.RackJammedRemovals != 2 {
+		t.Fatalf("second removal should unlock one additional slot: slots=%d removals=%d", app.state.RackSlotsUnlocked, app.state.RackJammedRemovals)
+	}
+	if app.state.CashOnHand != 35_000 || app.state.JammedLegacyRemovalCost() != 15_000 {
+		t.Fatalf("second removal should cost $100 and make the next fee $150: cash=%d nextFee=%d", app.state.CashOnHand, app.state.JammedLegacyRemovalCost())
+	}
+}
+
+func TestRackScrollbarIsVerticalAtPaneRightEdge(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.PurchaseModule("window_expansion", time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.state.InstallModule("window_expansion", time.Unix(3, 0)); err != nil {
+		t.Fatal(err)
+	}
+	app.mainView = "rack"
+
+	lines := plainViewLines(app.View())
+	leftWidth, rightWidth := paneWidths(app.layout())
+	railX := 2 + leftWidth + 1 + rightWidth - 2
+	foundHeader := false
+	railRows := 0
+	for _, line := range lines {
+		if strings.Contains(line, "INSTALLED RACK") {
+			foundHeader = true
+		}
+		if foundHeader && strings.Contains(line, "└") {
+			break
+		}
+		if foundHeader {
+			runes := []rune(line)
+			if railX >= len(runes) {
+				t.Fatalf("right rack pane line is too narrow for scrollbar at x=%d: %q", railX, line)
+			}
+			if runes[railX] != '█' && runes[railX] != '░' {
+				t.Fatalf("scrollbar cell at x=%d should be vertical track/thumb, got %q in %q", railX, string(runes[railX]), line)
+			}
+			railRows++
+		}
+	}
+	if railRows < 6 {
+		t.Fatalf("expected a vertical scrollbar spanning the rack pane, found %d rows", railRows)
+	}
+}
+
+func TestRemovingLegacyModuleButtonCreatesBlankBayCards(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "rack"
+	app.state.CashOnHand = 10_000
+	if err := app.state.RemoveJammedLegacyModule(time.Unix(2, 0)); err != nil {
+		t.Fatalf("remove legacy controller before checking the now-open bays: %v", err)
+	}
+
+	lines := plainViewLines(app.View())
+	_, rightWidth := paneWidths(app.layout())
+	paneInner := rightWidth-2
+	contentWidth := paneInner-1
+	cardWidth := max(20,min(contentWidth,54))
+	emptyTop := "┌"+strings.Repeat("─",cardWidth-2)+"┐"
+	foundEmptyBay := false
+	for y, line := range lines {
+		if !strings.Contains(line, emptyTop) || y+rackBayHeight > len(lines) {
+			continue
+		}
+		cardText := strings.Join(lines[y:y+rackBayHeight], "\n")
+		if !strings.Contains(cardText, "LEGACY PRINT CONTROLLER") &&
+			!strings.Contains(cardText, "WINDOW EXPANSION") &&
+			!strings.Contains(cardText, "QUEUE CALIBRATION") &&
+			!strings.Contains(cardText, "AUTOMATIC INJECTOR") {
+			foundEmptyBay = true
+			break
+		}
+	}
+	if !foundEmptyBay {
+		t.Fatal("rack should render at least one empty bay as a full blank enclosure")
+	}
+}
+
+
+func TestMouseHitboxesUseTerminalCellsNotUTF8ByteOffsets(t *testing.T) {
+	line := "  │┌─ RACK BUS │        [X]"
+	byteOffset := strings.Index(line, "[X]")
+	cell := cellOffset(line, "[X]")
+	if byteOffset == cell {
+		t.Fatalf("test line should have different byte and cell offsets: byte=%d cell=%d", byteOffset, cell)
+	}
+	if !mouseWithin(line, cell, "[X]") {
+		t.Fatalf("mouse target should be hit at terminal cell %d: %q", cell, line)
+	}
+	if mouseWithin(line, cell-1, "[X]") {
+		t.Fatalf("click one cell before the target should miss: cell=%d line=%q", cell, line)
+	}
+	if !rackControlWithin(line, cell-2, "[X]") {
+		t.Fatalf("expanded rack target should include two cells before the symbol")
+	}
+}
+
+
+
+func rackLeftPaneText(t *testing.T, app *App) string {
+	t.Helper()
+	lines := plainViewLines(app.rackPanel(app.layout()))
+	leftWidth, _ := paneWidths(app.layout())
+	var out strings.Builder
+	for _, line := range lines {
+		cells := []rune(line)
+		out.WriteString(string(cells[:min(len(cells), leftWidth)]))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func TestRackOnlyListsOwnedModulesReadyToInstall(t *testing.T) {
+	now := time.Now()
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	if err := app.state.RemoveJammedLegacyModule(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.state.PurchaseModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := app.state.InstallModule("window_expansion", now); err != nil { t.Fatal(err) }
+	if err := app.state.PurchaseModule("queue_calibration", now); err != nil { t.Fatal(err) }
+	app.mainView = "rack"
+
+	left := rackLeftPaneText(t, app)
+	if !strings.Contains(left, "QUEUE CALIBRATION") {
+		t.Fatalf("owned, uninstalled module should be listed as ready: %q", left)
+	}
+	for _, hidden := range []string{"WINDOW EXPANSION", "AUTOMATIC INJECTOR", "SIGNAL OBFUSCATOR"} {
+		if strings.Contains(left, hidden) {
+			t.Fatalf("rack left pane should omit installed or unowned module %q: %q", hidden, left)
+		}
+	}
+}
+
+func TestFullRackRejectsInstallAndFlashesReadyModuleRed(t *testing.T) {
+	now := time.Now()
+	app := New(game.NewState(now))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.state.CashOnHand = 100_000
+	for i := 0; i < 3; i++ {
+		if err := app.state.RemoveJammedLegacyModule(now); err != nil { t.Fatalf("unlock rack bay %d: %v", i+1, err) }
+	}
+
+	for _, id := range []string{"window_expansion", "queue_calibration", "auto_injector"} {
+		if err := app.state.PurchaseModule(id, now); err != nil { t.Fatalf("purchase %s: %v", id, err) }
+		if err := app.state.InstallModule(id, now); err != nil { t.Fatalf("install %s: %v", id, err) }
+	}
+	if err := app.state.PurchaseModule("obfuscation", now); err != nil { t.Fatal(err) }
+	app.mainView = "rack"
+	app.uiFrame = 0
+
+	y, line := rackLine(t, app, "SIGNAL OBFUSCATOR")
+	if !strings.Contains(line, "SIGNAL OBFUSCATOR") {
+		t.Fatal("ready module should be visible in left rack pane before the attempted install")
+	}
+	app.handleMouse(app.paneLeftSymbolX(), y)
+
+	m := app.state.Module("obfuscation")
+	if m == nil || m.Installed {
+		t.Fatalf("install attempt against a full rack must leave the module uninstalled: %#v", m)
+	}
+	if app.rackHasFreeBay() {
+		t.Fatalf("three installed modules should occupy all three rack bays: %#v", app.rackBays())
+	}
+	if app.rackRejectedModule != "obfuscation" || !app.rackRejectFlashUntil.After(time.Now()) {
+		t.Fatalf("rejected module should have an active red-flash target and deadline: id=%q until=%v", app.rackRejectedModule, app.rackRejectFlashUntil)
+	}
+	if !strings.Contains(app.message, "RACK FULL") {
+		t.Fatalf("player should receive clear full-rack feedback, got %q", app.message)
+	}
+}
+
+func TestRackPaneOmitsRedundantControlFooter(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 100, 31
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "rack"
+	view := strings.Join(plainViewLines(app.View()), "\n")
+	if strings.Contains(view, "[X] REMOVE MODULE") || strings.Contains(view, "CONFIRM SPECIALIST") {
+		t.Fatal("rack pane should not contain the redundant control footer")
+	}
+}
+
+
+func TestCapacityBarUsesLightLineFillAndBlankEmptyTrack(t *testing.T) {
+	if got, want := capacityUtilizationBar(2, 5), "──   "; got != want {
+		t.Fatalf("partially filled capacity bar = %q, want %q", got, want)
+	}
+	if got, want := capacityUtilizationBar(5, 5), "─────"; got != want {
+		t.Fatalf("full capacity bar = %q, want %q", got, want)
+	}
+	if got, want := capacityUtilizationBar(0, 5), "     "; got != want {
+		t.Fatalf("empty capacity bar = %q, want %q", got, want)
+	}
+}
+
+func TestPrinterBarUsesInvertedHeavyAndLightTracks(t *testing.T) {
+	if got, want := printerProgressBar(2, 5), "──━━━"; got != want {
+		t.Fatalf("partially filled printer bar = %q, want %q", got, want)
+	}
+	if got, want := printerProgressBar(5, 5), "─────"; got != want {
+		t.Fatalf("full printer bar = %q, want %q", got, want)
+	}
+	if got, want := printerProgressBar(0, 5), "━━━━━"; got != want {
+		t.Fatalf("empty printer bar = %q, want %q", got, want)
+	}
+}
+
+func TestPrinterProgressHeadTracksFillAndStaysVisibleAtCompletion(t *testing.T) {
+	cases := []struct {
+		name string
+		filled, width int
+		want string
+	}{
+		{name: "empty", filled: 0, width: 5, want: "▶━━━━"},
+		{name: "partial", filled: 2, width: 5, want: "──▶━━"},
+		{name: "complete", filled: 5, width: 5, want: "────▶"},
+		{name: "zero width", filled: 0, width: 0, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := printerProgressDisplayBar(tc.filled, tc.width); got != tc.want {
+				t.Fatalf("printer display bar = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrinterDollarColorOnlyRespondsToPlayerInjection(t *testing.T) {
+	cases := []struct {
+		name string
+		batch game.BatchState
+		want lipgloss.Color
+	}{
+		{name: "missed run stays grey", batch: game.BatchState{}, want: printerTrackColor},
+		{name: "automatic injection does not recolor marker", batch: game.BatchState{QueuedDollars: 2}, want: printerTrackColor},
+		{name: "player injection turns marker yellow", batch: game.BatchState{QueuedDollars: 2, PlayerQueuedDollars: 1}, want: amber},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := printerDollarColor(tc.batch); got != tc.want {
+				t.Fatalf("printer dollar color = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrinterEndFlashColorReflectsWhoQueuedThePrint(t *testing.T) {
+	cases := []struct {
+		name string
+		batch game.BatchState
+		want lipgloss.Color
+	}{
+		{name: "missed run stays grey", batch: game.BatchState{}, want: printerTrackColor},
+		{name: "automatic injection flashes yellow at cycle end", batch: game.BatchState{QueuedDollars: 2}, want: amber},
+		{name: "player injection flashes green at cycle end", batch: game.BatchState{QueuedDollars: 2, PlayerQueuedDollars: 1}, want: green},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := printerEndColor(tc.batch); got != tc.want {
+				t.Fatalf("printer end color = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -31,6 +32,50 @@ type uiLayout struct {
 	SideBySide bool
 }
 
+type moduleLEDAnimation struct {
+	on            bool
+	nextToggleAt  time.Time
+	random        uint64
+}
+
+type moduleBootAnimation struct {
+	progress           int
+	statusIndex        int
+	statusMessages     []string
+	progressMilestones []int
+	nextProgressAt     time.Time
+	nextStatusAt       time.Time
+	progressRandom     uint64
+	statusRandom       uint64
+}
+
+var bootStatusMessages = []string{
+	"BUS ENUMERATION IN PROGRESS",
+	"FIRMWARE SIGNATURE VERIFIED",
+	"CALIBRATING TIMING BUS",
+	"LOADING CONTROL ROUTINES",
+	"RUNNING INTEGRITY CHECK",
+	"FINALIZING MODULE HANDSHAKE",
+	"CHECKING DEVICE REGISTERS",
+	"SYNCING CONTROLLER CLOCK",
+	"VERIFYING MEMORY MAP",
+	"ALLOCATING I/O CHANNELS",
+	"INITIALIZING BUFFER POOLS",
+	"CHECKING THERMAL TELEMETRY",
+	"VALIDATING COMMAND QUEUE",
+	"ESTABLISHING DATA PATH",
+	"REBUILDING DEVICE INDEX",
+	"CHECKING WRITE PROTECTION",
+	"VERIFYING INTERRUPT ROUTING",
+	"STARTING BACKGROUND WORKERS",
+	"TESTING READ/WRITE CHANNEL",
+	"COMMITTING CONFIGURATION",
+	"WAITING FOR CONTROLLER READY",
+	"RUNNING FINAL SELF-TEST",
+	"REGISTERING HARDWARE PROFILE",
+	"CONFIRMING DEVICE IDENTITY",
+}
+
 type App struct {
 	state game.State
 	screen screen
@@ -38,11 +83,36 @@ type App struct {
 	menu int
 	message string
 	uiFrame int64
+	newsHeadline string
+	moduleLEDs map[string]*moduleLEDAnimation
+	moduleBoots map[string]*moduleBootAnimation
+	newsStartedAt time.Time
+	injectFlashUntil time.Time
+	printerEndFlashUntil time.Time
+	printerEndFlashColor lipgloss.Color
+	injectMouseHeld bool
+	injectHeldRed bool
+	mainView string
+	selectedUpgrade int
+	selectedRackModule int
+	rackFocusRight bool
+	rackCatalogSelected bool
+	rackRemovalArmedModule string
+	rackRejectedModule string
+	rackRejectFlashUntil time.Time
+	upgradeBuyArmed bool
+	rackLeftScroll int
+	rackRightScroll int
 }
 
 func New(state game.State) *App {
 	state.Normalize()
-	return &App{state: state, screen: screenMenu, width: 80, height: 24}
+	if state.CurrentTab == game.TabStore { state.CurrentTab = game.TabPrint }
+	return &App{
+		state: state, screen: screenMenu, width: 80, height: 24,
+		moduleLEDs: make(map[string]*moduleLEDAnimation),
+		moduleBoots: make(map[string]*moduleBootAnimation),
+	}
 }
 func (a *App) Run() error {
 	_, err := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -55,17 +125,61 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
 	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+			a.injectMouseHeld = false
+			a.injectHeldRed = false
+		}
+		if msg.Action == tea.MouseActionMotion && msg.Button == tea.MouseButtonLeft && a.injectMouseHeld {
+			// Keep the failed-injection feedback visible for the duration of a held click.
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			a.injectMouseHeld = a.isInjectAt(msg.X, msg.Y)
+			a.injectHeldRed = false
 			return a, a.handleMouse(msg.X, msg.Y)
+		}
+		if a.screen == screenGame && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
+			delta := 1
+			if msg.Button == tea.MouseButtonWheelUp { delta = -1 }
+			if a.mouseOnTabRow(msg.Y) { a.cycleTab(delta) } else if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
+				leftWidth, _ := paneWidths(a.layout())
+				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+				if msg.X < 2+leftWidth {
+					visibleLeft := max(1, paneHeight-2)
+					a.rackLeftScroll = max(0, min(max(0, len(a.rackReadyModules())-visibleLeft), a.rackLeftScroll+delta))
+				} else {
+					visible := visibleRackBays(paneHeight)
+					a.rackRightScroll = max(0, min(max(0, len(a.rackBays())-visible), a.rackRightScroll+delta))
+				}
+			} else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.selectedUpgrade=max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade+delta)) }
 		}
 	case tickMsg:
 		if a.screen == screenGame {
-			a.state.Advance(time.Time(msg))
+			previousNews := a.state.NewsIndex
+			now := time.Time(msg)
+			// Preserve one final rendered tick after the simulation resets the batch.
+			// The end marker reports whether the player injected, automation injected,
+			// or the opportunity was missed entirely.
+			if a.state.Batch.Progress >= game.BatchCycleTicks-1 {
+				a.printerEndFlashColor = printerEndColor(a.state.Batch)
+				a.printerEndFlashUntil = now.Add(1100 * time.Millisecond)
+			}
+			a.state.Advance(now)
+			if a.state.NewsIndex != previousNews { a.startNewsDispatch() }
+			// When the rack is hidden, booting hardware still advances at the
+			// simulation's normal one-second cadence without rapid redraw work.
+			if a.state.CurrentTab != game.TabPrint || a.mainView != "rack" {
+				a.advanceModuleBootAnimations(now)
+			}
 			return a, tick()
 		}
 	case uiPulseMsg:
 		if a.screen == screenGame {
 			a.uiFrame++
+			// Hardware animations only advance while their rack panel is visible.
+			// The game simulation still advances on its separate one-second tick.
+			if a.state.CurrentTab == game.TabPrint && a.mainView == "rack" {
+				a.advanceRackAnimations(time.Now())
+			}
 			return a, uiPulse()
 		}
 	case tea.KeyMsg:
@@ -74,9 +188,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.autosave()
 			return a, tea.Quit
 		case "up", "k":
-			if a.screen == screenMenu && a.menu > 0 { a.menu-- } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(-1) }
+			if a.screen == screenMenu && a.menu > 0 { a.menu-- } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(-1) } else if a.screen == screenGame { a.moveMainSelection(-1) }
 		case "down", "j":
-			if a.screen == screenMenu && a.menu < 2 { a.menu++ } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(1) }
+			if a.screen == screenMenu && a.menu < 2 { a.menu++ } else if a.screen == screenGame && a.state.CurrentTab == game.TabMessages { a.selectMessage(1) } else if a.screen == screenGame { a.moveMainSelection(1) }
+		case "left":
+			if a.screen == screenGame && a.mainView == "rack" { a.rackFocusRight = false }
+		case "right":
+			if a.screen == screenGame && a.mainView == "rack" { a.rackFocusRight = true }
 		case "enter":
 			switch a.screen {
 			case screenMenu:
@@ -85,7 +203,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.screen, a.message = screenGame, ""
 				return a, tea.Batch(tick(), uiPulse())
 			case screenGame:
-				if a.state.CurrentTab == game.TabMessages { a.message = "" }
+				if a.state.CurrentTab == game.TabMessages { a.message = "" } else { a.activateMainSelection() }
 			}
 		case "n":
 			if a.screen == screenMenu { a.screen = screenIntro }
@@ -102,7 +220,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch a.screen {
 			case screenMenu: return a, tea.Quit
 			case screenIntro: a.screen = screenMenu
-			case screenGame: _ = a.state.OpenTab(game.TabPrint); a.message = ""
+			case screenGame: _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 			}
 		default:
 			if a.screen == screenGame { return a, a.handleGameKey(msg.String()) }
@@ -130,35 +248,22 @@ func (a *App) loadGame() {
 	loaded, err := save.Read(savePath)
 	if err != nil { a.message = "No readable save found. Choose NEW OPERATION to begin."; return }
 	loaded.Normalize()
+	if loaded.CurrentTab == game.TabStore { loaded.CurrentTab = game.TabPrint }
 	a.state, a.screen, a.message = loaded, screenGame, "Operation loaded."
 }
 
 func (a *App) layout() uiLayout {
-	w, h := a.width, a.height
-	if w < 24 { w = 24 }; if h < 12 { h = 12 }
+	// Keep the interface away from the terminal's bottom row and rightmost
+	// column. Some terminals wrap or scroll when a frame touches either edge.
+	w, h := a.width-1, a.height-1
+	if w < 24 { w = 24 }
+	if h < 12 { h = 12 }
 	sideBySide := w >= 100
-	bodyWidth := max(24, w-8)
-	choiceBase := 12
-	if sideBySide { bodyWidth = max(24, w-max(28,min(36,w/3))-12); choiceBase = 6 }
-	choiceY := 0
-	messageLastY := 17
-	if h < 30 {
-		if sideBySide { messageLastY = 16 } else { messageLastY = 13 }
-		if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
-			if sideBySide { choiceY = 16 } else { choiceY = 17 }
-		}
-	} else if m := a.state.SelectedMessage(); m != nil && len(m.Choices)>0 && a.state.PendingReplyTicks==0 {
-		choiceY = 12 + choiceBase + len(strings.Split(wrapText(m.Body,bodyWidth), "\n"))
-	}
-	// The cash panel can gain a row when its values wrap at narrower widths.
-	// Measure the rendered panel instead of assuming a fixed vertical position.
-	cashHeight := lipgloss.Height(a.cashPanelView(w))
-	tabsY := 5 + cashHeight
-	panelY := tabsY + 2
+	panelY := 4
 	return uiLayout{
-		Width:w, Height:h, TabsY:tabsY, ContentY:panelY,
-		ExploitY:panelY+5, StoreCapacityY:panelY+2, StoreCalibrationY:panelY+4, StoreAutomationY:panelY+6,
-		MessageFirstY:panelY+1, MessageLastY:messageLastY-2+(panelY-11), MessageChoiceFirstY:choiceY-2+(panelY-11), TickerY:h-2,
+		Width:w, Height:h, TabsY:2, ContentY:panelY,
+		ExploitY:panelY+8, StoreCapacityY:panelY+11, StoreCalibrationY:panelY+12, StoreAutomationY:panelY+13,
+		MessageFirstY:panelY+1, MessageLastY:h-5, MessageChoiceFirstY:h-9, TickerY:h-2,
 		SideBySide:sideBySide,
 	}
 }
@@ -172,12 +277,8 @@ func plainViewLines(view string) []string {
 }
 
 func (a *App) handleMouse(x, y int) tea.Cmd {
-	// The reported hitbox offset worsened each time Y was subtracted, so the
-	// rendered-line lookup needs the opposite correction on intro/game screens.
-	// Keep the menu unchanged because its mouse coordinates already align.
-	if a.screen != screenMenu {
-		y++
-	}
+	// Bubble Tea mouse coordinates already include the terminal's rendered rows.
+	// Do not offset Y: doing so made every hitbox one row lower than its label.
 
 	// Hit testing uses the actual rendered view, including its padding and any
 	// rows added by wrapping. This avoids hard-coded coordinates drifting when
@@ -208,44 +309,206 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 		}
 	case screenGame:
 		// The tab strip is identified by its rendered labels, not a fixed row.
-		if strings.Contains(line, "PRINT") && strings.Contains(line, "STORE") && !strings.Contains(line, "OPERATIONS") {
-			storeAt := strings.Index(line, "STORE")
-			messagesAt := strings.Index(line, "MESSAGES")
-			switch {
-			case storeAt < 0 || x < storeAt:
-				_ = a.state.OpenTab(game.TabPrint)
-			case messagesAt >= 0 && x >= messagesAt:
-				_ = a.state.OpenTab(game.TabMessages)
-				if m := a.state.SelectedMessage(); m != nil {
-					_ = a.state.SelectMessage(m.ID, time.Now())
-				}
-			default:
-				_ = a.state.OpenTab(game.TabStore)
+		if strings.Contains(line, "[MAIN]") || strings.Contains(line, "[STORAGE]") || strings.Contains(line, "[MESSAGES") {
+			arrowAt := strings.LastIndex(line, ">")
+			if arrowAt >= 0 && x >= arrowAt {
+				a.cycleTab(1)
+				return nil
 			}
+			messagesAt := strings.Index(line, "MESSAGES")
+			storageAt := strings.Index(line, "STORAGE")
+			if messagesAt >= 0 && x >= messagesAt {
+				_ = a.state.OpenTab(game.TabMessages)
+				if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, time.Now()) }
+			} else if storageAt >= 0 && x >= storageAt {
+				_ = a.state.OpenTab(game.TabStorage)
+			} else { _ = a.state.OpenTab(game.TabPrint); a.mainView = "print" }
 			a.message = ""
 			return nil
 		}
 
 		switch a.state.CurrentTab {
-		case game.TabPrint:
-			if strings.Contains(line, "INJECT") {
-				return a.handleGameKey("x")
+		case game.TabPrint, game.TabStore:
+			if strings.Contains(line, "INJECT") && a.mainView != "rack" && a.mainView != "upgrades" { return a.handleGameKey("x") }
+			if a.mainView == "upgrades" {
+				leftWidth, _ := paneWidths(a.layout())
+				if x >= 2 && x < 2+leftWidth {
+					for row, paneTitle := range lines {
+						if strings.Contains(paneTitle, "MODULE CATALOG") {
+							idx := y-row-1
+							a.upgradeBuyArmed = false
+							if idx >= 0 && idx < len(game.ModuleCatalog) {
+								a.selectedUpgrade = idx
+							}
+							return nil
+						}
+					}
+				} else if mouseWithin(line, x, "[UPGRADE]") || mouseWithin(line, x, "[CONFIRM UPGRADE]") {
+					return a.armOrConfirmUpgradeBuy()
+				}
 			}
-			if strings.Contains(line, "[S] Store") {
-				return a.handleGameKey("s")
+			if a.mainView == "rack" {
+				if mouseWithin(line, x, "[U] UPGRADES") {
+					a.mainView = "upgrades"
+					a.selectedUpgrade = max(0,min(len(game.ModuleCatalog)-1,a.selectedUpgrade))
+					a.upgradeBuyArmed = false
+					return nil
+				}
+				if mouseWithin(line, x, "[B] BACK") {
+					a.mainView = "print"
+					a.message = ""
+					return nil
+				}
+				leftWidth, rightWidth := paneWidths(a.layout())
+				leftPaneHit := x >= 2 && x < 2+leftWidth
+				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+				visibleRight := visibleRackBays(paneHeight)
+				bays := a.rackBays()
+				startR := min(max(0,a.rackRightScroll), max(0,len(bays)-visibleRight))
+
+				if leftPaneHit {
+					readySpecs := a.rackReadyModules()
+					visibleLeft := max(1,paneHeight-2)
+					start := min(max(0,a.rackLeftScroll), max(0,len(readySpecs)-visibleLeft))
+					for row, paneTitle := range lines {
+						if strings.Contains(paneTitle, "MODULES") && strings.Contains(paneTitle, "┌") {
+							idx := start+y-row-1
+							if idx < start || idx >= min(len(readySpecs),start+visibleLeft) {
+								return nil
+							}
+							spec := readySpecs[idx]
+							// Every item in this pane is owned and ready. The trailing
+							// chevron attempts installation; names use select-then-click.
+							if x == leftWidth {
+								a.selectedUpgrade = idx
+								a.rackCatalogSelected = true
+								a.rackFocusRight = false
+								a.rackRemovalArmedModule = ""
+								a.installRackModule(spec.ID, time.Now())
+							} else if a.rackCatalogSelected && a.selectedUpgrade == idx {
+								a.toggleSelectedRackCatalogModule(time.Now())
+							} else {
+								a.selectedUpgrade = idx
+								a.rackCatalogSelected = true
+								a.rackFocusRight = false
+								a.rackRemovalArmedModule = ""
+								a.message = "Selected "+spec.Name+". Click again to install."
+							}
+							return nil
+						}
+					}
+					return nil
+				}
+
+				rightPaneStart := 3 + leftWidth
+				if x >= rightPaneStart && x < rightPaneStart+rightWidth {
+					// Reconstruct the physical bay geometry used by rackPanel.
+					// Actions are hit-tested by row and bay rectangle rather than
+					// by searching for "[X]" or "[REMOVE]" in rendered text.
+					paneInner := rightWidth-2
+					contentWidth := paneInner-1
+					cardWidth := max(20,min(contentWidth,54))
+					cardPad := max(0,(contentWidth-cardWidth)/2)
+					cardLeftX := rightPaneStart+1+cardPad
+
+					for row, paneTitle := range lines {
+						if !strings.Contains(paneTitle, "INSTALLED RACK") {
+							continue
+						}
+
+						for visibleIndex := 0; visibleIndex < visibleRight; visibleIndex++ {
+							slotIndex := startR+visibleIndex
+							if slotIndex < 0 || slotIndex >= len(bays) {
+								break
+							}
+							cardStartY := row+1+visibleIndex*rackBayHeight
+							if y < cardStartY || y >= cardStartY+rackBayHeight {
+								continue
+							}
+
+							mod := bays[slotIndex]
+							if mod == nil {
+								return nil
+							}
+							a.selectedRackModule = slotIndex
+							a.rackFocusRight = true
+
+							// [X] sits in the upper-right corner of a normal
+							// module's title row. Treat the visible corner as a
+							// target, not just the three glyphs.
+							xControlRow := y == cardStartY+1
+							xControlColumn := x >= cardLeftX+cardWidth-9 && x < cardLeftX+cardWidth
+							if !mod.Jammed && xControlRow && xControlColumn {
+								if err := a.state.RemoveModule(mod.ID,time.Now()); err != nil {
+									a.message = err.Error()
+								} else {
+									a.message = mod.ID+" removed from the rack."
+								}
+								a.rackRemovalArmedModule = ""
+								a.rackRightScroll = min(a.rackRightScroll,max(0,len(a.rackBays())-visibleRight))
+								return nil
+							}
+
+							// The specialist control sits on its own row in the
+							// legacy module. Any click within the right-aligned
+							// control area on that row is routed to the button.
+							removeControlRow := y == cardStartY+4
+							removeControlColumn := x >= cardLeftX+cardWidth-20 && x < cardLeftX+cardWidth
+							if mod.Jammed && removeControlRow && removeControlColumn {
+								if a.rackRemovalArmedModule == mod.ID {
+									if err := a.state.RemoveJammedLegacyModule(time.Now()); err != nil {
+										a.message = err.Error()
+									} else {
+										cleared := a.state.RackJammedRemovals
+									a.message = fmt.Sprintf("Specialist cleared controller %02d. One rack bay unlocked; controller %02d remains at the bottom.", cleared, cleared+1)
+										paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+										visible := visibleRackBays(paneHeight)
+										a.selectedRackModule = len(a.rackBays())-1
+										a.rackRightScroll = max(0, len(a.rackBays())-visible)
+									}
+									a.rackRemovalArmedModule = ""
+								} else {
+									a.rackRemovalArmedModule = mod.ID
+									a.message = fmt.Sprintf("Click [REMOVE] again to confirm specialist removal ($%s).", money(a.state.JammedLegacyRemovalCost()))
+								}
+								return nil
+							}
+
+							a.rackRemovalArmedModule = ""
+							return nil
+						}
+						return nil
+					}
+				}
 			}
-			if strings.Contains(line, "[M] Messages") {
-				return a.handleGameKey("m")
-			}
-		case game.TabStore:
 			switch {
-			case strings.Contains(line, "Lockable cash box") || strings.Contains(line, "LOCKABLE CASH BOX"):
-				return a.handleGameKey("1")
-			case strings.Contains(line, "Queue indicator calibration") || strings.Contains(line, "QUEUE INDICATOR CALIBRATION"):
-				return a.handleGameKey("2")
-			case strings.Contains(line, "Quiet exploit automation") || strings.Contains(line, "QUIET EXPLOIT AUTOMATION"):
-				return a.handleGameKey("3")
+			// MAIN places both controls on the same row. Check the actual
+			// label under the pointer so the R hitbox cannot be swallowed by U.
+			case mouseWithin(line, x, "[R] HARDWARE RACK"):
+				a.mainView = "rack"
+				a.selectedUpgrade = 0
+				a.rackLeftScroll = 0
+				a.rackFocusRight = false
+				a.rackCatalogSelected = false
+				a.rackRemovalArmedModule = ""
+				a.message = ""
+			case mouseWithin(line, x, "[U] UPGRADES"):
+				a.mainView = "upgrades"
+				a.selectedUpgrade = 0
+				a.upgradeBuyArmed = false
+				a.message = ""
+			case strings.Contains(line, "[ENTER] ACQUIRE / REMOVE SELECTED") && mouseWithin(line, x, "[ENTER] ACQUIRE / REMOVE SELECTED"):
+				a.activateMainSelection()
+			case mouseWithin(line, x, "[B] BACK TO OPERATIONS"):
+				a.mainView = "print"
+				a.message = ""
+			case a.mainView == "upgrades" && (mouseWithin(line, x, "[UPGRADE]") || mouseWithin(line, x, "[CONFIRM UPGRADE]")):
+				a.activateMainSelection()
+			case a.mainView == "rack" && (strings.Contains(line, "MODULES") || strings.Contains(line, "INSTALLED RACK")):
+				a.rackFocusRight = strings.Contains(line, "INSTALLED RACK") || x > lWidthForRack(a.width)
 			}
+		case game.TabStorage:
+			if strings.Contains(line,"BUY LOCKBOX") { return a.handleGameKey("1") }
 		case game.TabMessages:
 			switch {
 			case strings.Contains(line, "[I] Leave unanswered"):
@@ -275,6 +538,16 @@ func (a *App) handleMouse(x, y int) tea.Cmd {
 	}
 	return nil
 }
+func (a *App) armOrConfirmUpgradeBuy() tea.Cmd {
+	if a.upgradeBuyArmed {
+		a.upgradeBuyArmed = false
+		return a.handleGameKey("b")
+	}
+	a.upgradeBuyArmed = true
+	a.message = "Click BUY / UPGRADE again to confirm. Press B or ENTER to buy immediately."
+	return nil
+}
+
 func (a *App) selectMessage(delta int) {
 	if len(a.state.Messages) == 0 { return }
 	current := 0
@@ -284,29 +557,46 @@ func (a *App) selectMessage(delta int) {
 }
 
 func (a *App) handleGameKey(key string) tea.Cmd {
+	key = strings.ToLower(key)
 	now := time.Now()
 	switch key {
 	case "p", " ", "x":
-		if err := a.state.QueueExploit(now); err != nil { a.message = err.Error() } else { a.message = "Instruction queued. The batch continues." }
+		if err := a.state.QueueExploit(now); err != nil {
+			if err == game.ErrWindowClosed {
+				a.injectFlashUntil = now.Add(150 * time.Millisecond)
+				a.injectHeldRed = a.injectMouseHeld
+				a.message = ""
+			} else { a.message = err.Error() }
+		} else { a.injectHeldRed = false; a.message = "" }
 	case "1":
-		if a.state.CurrentTab == game.TabStore {
-			if err := a.state.BuyCapacityUpgrade(now); err != nil { a.message = err.Error() } else { a.message = "Cash box installed." }
+		if a.state.CurrentTab == game.TabStorage { if err := a.state.BuyLockbox(now); err != nil { a.message = err.Error() } else { a.message = "Lockbox added. Apartment capacity increased." } } else if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+			a.mainView = "upgrades"; a.selectedUpgrade = 0
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(0, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "2":
-		if a.state.CurrentTab == game.TabStore {
-			if err := a.state.BuyWindowCalibration(now); err != nil { a.message = err.Error() } else { a.message = "Queue indicator calibration installed." }
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" {
+			a.buySelectedModule(now)
+		} else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+			a.mainView = "rack"
+			a.selectedUpgrade = 0
+			a.rackLeftScroll = 0
+			a.rackFocusRight = false
+			a.rackCatalogSelected = false
+			a.rackRemovalArmedModule = ""
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(1, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
 	case "3":
-		if a.state.CurrentTab == game.TabStore {
-			if err := a.state.BuyAutomation(now); err != nil { a.message = err.Error() } else { a.message = "Exploit automation enabled." }
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else if a.state.CurrentTab == game.TabStore || a.state.CurrentTab == game.TabPrint {
+			a.mainView = "print"
 		} else if a.state.CurrentTab == game.TabMessages {
 			if err := a.state.ReplyToSelected(2, now); err != nil { a.message = err.Error() } else { a.message = "Reply sent. The inbox is quiet for now." }
 		}
-	case "s": _ = a.state.OpenTab(game.TabStore); a.message = ""
+	case "s": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
+	case "t": if a.state.StorageUnlocked { _ = a.state.OpenTab(game.TabStorage); a.message = "" }
+	case "u": if a.state.CurrentTab == game.TabPrint { a.mainView = "upgrades"; a.selectedUpgrade = 0; a.upgradeBuyArmed = false; a.message = "" }
+	case "r": if a.state.CurrentTab == game.TabPrint { a.mainView = "rack"; a.selectedUpgrade = 0; a.rackLeftScroll = 0; a.rackFocusRight = false; a.rackCatalogSelected = false; a.rackRemovalArmedModule = ""; a.message = "" }
 	case "m", "e":
 		if err := a.state.OpenTab(game.TabMessages); err != nil { a.message = err.Error() } else {
 			if m := a.state.SelectedMessage(); m != nil { _ = a.state.SelectMessage(m.ID, now) }
@@ -314,10 +604,12 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 		}
 	case "i":
 		if err := a.state.IgnoreSelectedMessage(now); err != nil { a.message = err.Error() } else { a.message = "You leave the message unanswered." }
-	case "b", "esc": _ = a.state.OpenTab(game.TabPrint); a.message = ""
+	case "b":
+		if a.state.CurrentTab == game.TabPrint && a.mainView == "upgrades" { a.buySelectedModule(now) } else { _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = "" }
+	case "esc": _ = a.state.OpenTab(game.TabPrint); a.mainView = "print"; a.message = ""
 	case "v":
 		if err := save.Write(savePath, a.state); err != nil { a.message = "Save failed: "+err.Error() } else { a.message = "Saved to "+savePath }
-	case "h", "?": a.message = "X/P exploit  •  S store  •  M messages  •  1–3 reply/upgrade  •  I ignore  •  V save  •  Q quit"
+	case "h", "?": a.message = "X/P inject  •  U upgrades  •  R rack  •  S main  •  T storage  •  M messages  •  1–3 reply  •  V save  •  Q quit"
 	case "q": a.autosave(); return tea.Quit
 	}
 	return nil
@@ -325,20 +617,65 @@ func (a *App) handleGameKey(key string) tea.Cmd {
 func (a *App) autosave() { if a.screen == screenGame { if err := save.Write(savePath, a.state); err != nil { a.message = "Autosave failed: "+err.Error() } } }
 
 func (a *App) View() string {
+	var view string
 	switch a.screen {
-	case screenMenu: return a.menuView()
-	case screenIntro: return a.introView()
-	default: return a.gameView()
+	case screenMenu:
+		view = a.menuView()
+	case screenIntro:
+		view = a.introView()
+	default:
+		view = a.gameView()
 	}
+	// Bubble Tea redraws a full-screen view as a grid. Keep that grid's
+	// dimensions stable and overwrite blank cells so changing panels cannot
+	// leave stale borders or cause the terminal to scroll.
+	return stableTerminalFrame(view, max(1, a.width-1), max(1, a.height-1))
 }
 
+func stableTerminalFrame(view string, width, height int) string {
+	width = max(1, width)
+	height = max(1, height)
+
+	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		if lipgloss.Width(line) > width {
+			// This is an emergency frame boundary, not content truncation. Hard-clip
+			// here without adding an ellipsis to every overflowing row; the latter
+			// creates a distracting column of dots in narrow terminals.
+			line = clipToWidth(line, width)
+		}
+		if cells := lipgloss.Width(line); cells < width {
+			line += strings.Repeat(" ", width-cells)
+		}
+		lines[i] = line
+	}
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Centralized color vocabulary. The current terminal theme stays restrained;
+// extra hues are reserved for future crypto, casino, and message-category UIs.
 var (
+	cyan = lipgloss.Color("#69C6D2")
+	blue = lipgloss.Color("#7198D4")
+	teal = lipgloss.Color("#65B9A6")
+	violet = lipgloss.Color("#A88AD6")
+	magenta = lipgloss.Color("#D27CC1")
+	orange = lipgloss.Color("#D98B5F")
+	pink = lipgloss.Color("#D9879A")
+	lime = lipgloss.Color("#B7C96A")
 	ink = lipgloss.Color("#D8D8D0")
 	muted = lipgloss.Color("#777970")
 	red = lipgloss.Color("#B84B45")
 	amber = lipgloss.Color("#D6B36A")
 	green = lipgloss.Color("#9BC5A0")
-	lineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#42453F"))
+	printerTrackColor = lipgloss.Color("#42453F")
+	lineStyle = lipgloss.NewStyle().Foreground(printerTrackColor)
 	titleStyle = lipgloss.NewStyle().Foreground(ink).Bold(true)
 	subtitleStyle = lipgloss.NewStyle().Foreground(muted).Italic(true)
 	labelStyle = lipgloss.NewStyle().Foreground(muted)
@@ -382,84 +719,1080 @@ func (a *App) introView() string {
 	return lipgloss.NewStyle().Padding(2,3).Width(width).Render(content)
 }
 
+func (a *App) moveMainSelection(delta int) {
+	if a.mainView == "upgrades" {
+		a.selectedUpgrade = max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade+delta))
+		a.upgradeBuyArmed = false
+		return
+	}
+	if a.mainView == "rack" {
+		a.rackRemovalArmedModule = ""
+		if a.rackFocusRight {
+			bays := a.rackBays()
+			a.selectedRackModule = max(0, min(max(0, len(bays)-1), a.selectedRackModule+delta))
+			paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+			visible := visibleRackBays(paneHeight)
+			if a.selectedRackModule >= a.rackRightScroll+visible { a.rackRightScroll = a.selectedRackModule-visible+1 }
+			if a.selectedRackModule < a.rackRightScroll { a.rackRightScroll = a.selectedRackModule }
+		} else {
+			readySpecs := a.rackReadyModules()
+			if len(readySpecs) == 0 {
+				a.selectedUpgrade = 0
+				a.rackCatalogSelected = false
+				return
+			}
+			a.selectedUpgrade = max(0, min(len(readySpecs)-1, a.selectedUpgrade+delta))
+			a.rackCatalogSelected = true
+			paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+			visibleLeft := max(1, paneHeight-2)
+			if a.selectedUpgrade >= a.rackLeftScroll+visibleLeft { a.rackLeftScroll = a.selectedUpgrade-visibleLeft+1 }
+			if a.selectedUpgrade < a.rackLeftScroll { a.rackLeftScroll = a.selectedUpgrade }
+		}
+	}
+}
+
+func (a *App) installedModules() []game.ModuleState {
+	var result []game.ModuleState
+	for _, m := range a.state.Modules { if m.Installed && !m.Jammed { result = append(result,m) } }
+	for _, m := range a.state.Modules { if m.Installed && m.Jammed { result = append(result,m) } }
+	return result
+}
+
+func (a *App) selectRackModule(id string) {
+	for i, m := range a.rackBays() {
+		if m != nil && m.ID == id {
+			a.selectedRackModule = i
+			return
+		}
+	}
+}
+
+func (a *App) hasPurchasedModule() bool {
+	for _, spec := range game.ModuleCatalog {
+		if m := a.state.Module(spec.ID); m != nil && m.Level > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) rackReadyModules() []game.ModuleSpec {
+	var ready []game.ModuleSpec
+	for _, spec := range game.ModuleCatalog {
+		if m := a.state.Module(spec.ID); m != nil && m.Level > 0 && !m.Installed && !m.Jammed {
+			ready = append(ready, spec)
+		}
+	}
+	return ready
+}
+
+func (a *App) rackHasFreeBay() bool {
+	for _, bay := range a.rackBays() {
+		if bay == nil { return true }
+	}
+	return false
+}
+
+func (a *App) hasJammedRackModule() bool {
+	m := a.state.Module("legacy_controller")
+	return m != nil && m.Installed && m.Jammed
+}
+
+func (a *App) hasReadyModules() bool {
+	return len(a.rackReadyModules()) > 0
+}
+
+func formatUptime(seconds int64) string {
+	if seconds < 0 { seconds = 0 }
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	secs := seconds % 60
+	return fmt.Sprintf("%03d:%02d:%02d", hours, minutes, secs)
+}
+
+func (a *App) activateMainSelection() {
+	now := time.Now()
+	if a.mainView == "upgrades" {
+		a.buySelectedModule(now)
+		return
+	}
+	if a.mainView != "rack" {
+		return
+	}
+	if a.rackFocusRight {
+		bays := a.rackBays()
+		if a.selectedRackModule < 0 || a.selectedRackModule >= len(bays) {
+			return
+		}
+		m := bays[a.selectedRackModule]
+		if m == nil {
+			a.message = "This bay is empty. Select a purchased module from the left pane."
+			return
+		}
+		if m.Jammed {
+			if a.rackRemovalArmedModule != m.ID {
+				a.rackRemovalArmedModule = m.ID
+				a.message = fmt.Sprintf("Select [REMOVE] again to confirm specialist removal ($%s).", money(a.state.JammedLegacyRemovalCost()))
+				return
+			}
+			if err := a.state.RemoveJammedLegacyModule(now); err != nil {
+				a.message = err.Error()
+			} else {
+				cleared := a.state.RackJammedRemovals
+				a.message = fmt.Sprintf("Specialist cleared controller %02d. One rack bay unlocked; controller %02d remains at the bottom.", cleared, cleared+1)
+				paneHeight := max(4, panelLineLimit(a.layout(), a.message != "")-2)
+				visible := visibleRackBays(paneHeight)
+				a.selectedRackModule = len(a.rackBays())-1
+				a.rackRightScroll = max(0, len(a.rackBays())-visible)
+			}
+			a.rackRemovalArmedModule = ""
+			return
+		}
+		if err := a.state.RemoveModule(m.ID, now); err != nil {
+			a.message = err.Error()
+		} else {
+			a.message = "Module removed from rack."
+		}
+		a.rackRemovalArmedModule = ""
+		return
+	}
+	readySpecs := a.rackReadyModules()
+	if len(readySpecs) == 0 {
+		a.rackCatalogSelected = false
+		a.message = "No modules are ready for installation. Purchase hardware in UPGRADES."
+		return
+	}
+	if !a.rackCatalogSelected {
+		a.selectedUpgrade = max(0, min(len(readySpecs)-1, a.selectedUpgrade))
+		a.rackCatalogSelected = true
+		a.message = "Selected "+readySpecs[a.selectedUpgrade].Name+". Press ENTER to install."
+		return
+	}
+	a.toggleSelectedRackCatalogModule(now)
+}
+
+func (a *App) toggleSelectedRackCatalogModule(now time.Time) {
+	readySpecs := a.rackReadyModules()
+	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(readySpecs) {
+		a.rackCatalogSelected = false
+		return
+	}
+	a.installRackModule(readySpecs[a.selectedUpgrade].ID, now)
+}
+
+func (a *App) installRackModule(id string, now time.Time) {
+	m := a.state.Module(id)
+	if m == nil || m.Level <= 0 || m.Installed || m.Jammed {
+		a.message = "This module is not ready for installation."
+		return
+	}
+	if !a.rackHasFreeBay() {
+		a.rackRejectedModule = id
+		a.rackRejectFlashUntil = now.Add(1400*time.Millisecond)
+		a.message = "RACK FULL. Remove a module before installing another."
+		return
+	}
+	if err := a.state.InstallModule(id, now); err != nil {
+		a.message = err.Error()
+		return
+	}
+	a.rackRejectedModule = ""
+	a.rackRejectFlashUntil = time.Time{}
+	name := id
+	for _, spec := range game.ModuleCatalog {
+		if spec.ID == id {
+			name = spec.Name
+			break
+		}
+	}
+	a.message = name+" inserted. Initialization sequence started."
+	if installed := a.state.Module(id); installed != nil && installed.Booting {
+		a.ensureModuleBootAnimation(*installed, now)
+	}
+	a.rackFocusRight = true
+	a.selectRackModule(id)
+}
+
+func (a *App) buySelectedModule(now time.Time) {
+	if a.selectedUpgrade < 0 || a.selectedUpgrade >= len(game.ModuleCatalog) {
+		return
+	}
+	spec := game.ModuleCatalog[a.selectedUpgrade]
+	if spec.ID == "obfuscation" && a.state.Risk < 25 {
+		a.message = "Signal obfuscation remains unavailable until scrutiny increases."
+		return
+	}
+	if err := a.state.PurchaseModule(spec.ID, now); err != nil {
+		a.message = err.Error()
+	} else {
+		m := a.state.Module(spec.ID)
+		a.message = spec.Name+" revision "+fmt.Sprint(m.Level)+" purchased. Ready for installation in HARDWARE RACK."
+	}
+	a.upgradeBuyArmed = false
+}
+
+func lWidthForRack(width int) int { return max(24,min(38,width/3)) }
+
+func moduleGain(id string, level int) string {
+	switch id {
+	case "window_expansion": return fmt.Sprintf("+%ds EXPLOIT WINDOW", level)
+	case "queue_calibration": return fmt.Sprintf("+%ds QUEUE WINDOW", level)
+	case "auto_injector": return fmt.Sprintf("+%d AUTO INJECTION", level)
+	case "obfuscation": return "NO ACTIVE EFFECT"
+	default: return "SYSTEM HARDWARE"
+	}
+}
+
 func (a *App) gameView() string {
 	l := a.layout()
-	var b strings.Builder
-	header := titleStyle.Render("DEEP STATE CLICKER")+"  "+labelStyle.Render("FEDERAL RESERVE / INTERNAL TERMINAL")
-	b.WriteString(header+"\n")
-	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20,l.Width-4)))+"\n")
-	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %04ds  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), a.state.Tick, a.state.Risk))+"\n")
-	b.WriteString("\n")
-	b.WriteString(a.cashPanelView(l.Width)+"\n")
-	tabs := []game.Tab{game.TabPrint,game.TabStore}
-	if a.state.EmailUnlocked { tabs = append(tabs,game.TabMessages) }
-	var labels []string
-	for _, tab := range tabs {
-		label := string(tab)
-		unread := unreadCount(a.state.Messages)
-		urgent := a.state.ITSuspicion >= 4 || (a.state.PendingReplyTicks > 0 && a.state.PendingReplyTicks <= 2)
-		if tab == game.TabMessages && unread > 0 {
-			label += fmt.Sprintf(" !%d", unread)
-			if urgent {
-				if a.uiFrame%5 < 3 { labels = append(labels, dangerStyle.Render("["+label+"]")) } else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
-			} else if a.uiFrame%5 < 3 {
-				labels = append(labels, selectedStyle.Render("["+label+"]"))
-			} else { labels = append(labels, labelStyle.Render(" "+label+" ")) }
-		} else if tab == a.state.CurrentTab { labels=append(labels,selectedStyle.Render("["+label+"]")) } else { labels=append(labels,labelStyle.Render(" "+label+" ")) }
+	footerWidth := max(12, min(l.Width-4, a.width-5))
+	keyboardLines := keyboardControlLines(footerWidth)
+	if a.width < 32 || l.Height < 18 {
+		keyboardLines = []string{"RESIZE / Q QUIT"}
 	}
-	b.WriteString("\n"+strings.Join(labels,"     ")+"\n")
-	b.WriteString(lineStyle.Render(strings.Repeat("─",max(20,l.Width-4)))+"\n")
+	footerRows := len(keyboardLines)
+	panelLayout := l
+	panelLayout.TickerY -= footerRows - 1
 
+	var b strings.Builder
+	b.WriteString(a.newsStripView(max(12, l.Width-4))+"\n")
+	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
+	tabs := []game.Tab{game.TabPrint}
+	if a.state.StorageUnlocked { tabs = append(tabs, game.TabStorage) }
+	if a.state.EmailUnlocked { tabs = append(tabs, game.TabMessages) }
+	var labels []string
+	unread := unreadCount(a.state.Messages)
+	urgent := a.state.ITSuspicion >= 4 || (a.state.PendingReplyTicks > 0 && a.state.PendingReplyTicks <= 2)
+	for _, tab := range tabs {
+		label := "MAIN"
+		if tab == game.TabStorage { label = "STORAGE" }
+		if tab == game.TabMessages { label = "MESSAGES"; if unread > 0 { label += fmt.Sprintf(" !%d", unread) } }
+		rendered := "["+label+"]"
+		if tab == a.state.CurrentTab { labels = append(labels, selectedStyle.Render(rendered))
+		} else if tab == game.TabMessages && unread > 0 && urgent {
+			if a.uiFrame%5 < 3 { labels = append(labels, dangerStyle.Render(rendered)) } else { labels = append(labels, labelStyle.Render(rendered)) }
+		} else if tab == game.TabMessages && unread > 0 && a.uiFrame%5 < 3 { labels = append(labels, selectedStyle.Render(rendered))
+		} else { labels = append(labels, labelStyle.Render(rendered)) }
+	}
+	tabLine := strings.Join(labels, "   ")
+	if lipgloss.Width(tabLine) > max(12, l.Width-8) {
+		selectedLabel := "[MAIN]"
+		if a.state.CurrentTab == game.TabStorage { selectedLabel = "[STORAGE]" }
+		if a.state.CurrentTab == game.TabMessages {
+			selectedLabel = "[MESSAGES"
+			if unread > 0 { selectedLabel += fmt.Sprintf(" !%d", unread) }
+			selectedLabel += "]"
+		}
+		tabLine = selectedStyle.Render(selectedLabel) + " " + selectedStyle.Render(">")
+	}
+	b.WriteString(tabLine+"\n")
+	b.WriteString(lineStyle.Render(strings.Repeat("─", max(20, l.Width-4)))+"\n")
 	var panel string
 	switch a.state.CurrentTab {
-	case game.TabPrint: panel = a.printPanel(l)
-	case game.TabStore: panel = a.storePanel(l)
-	case game.TabMessages: panel = a.messagesPanel(l)
+	case game.TabPrint, game.TabStore:
+		switch a.mainView {
+		case "upgrades": panel = a.upgradesPanel(panelLayout)
+		case "rack": panel = a.rackPanel(panelLayout)
+		default: panel = a.printPanel(panelLayout)
+		}
+	case game.TabStorage: panel = a.storagePanel(panelLayout)
+	case game.TabMessages: panel = a.messagesPanel(panelLayout)
 	}
-	panelLines := max(4, l.TickerY-l.ContentY-2)
-	if a.message != "" { panelLines-- }
+	// Give the wrapped keyboard legend room at the bottom while preserving pane
+	// borders and scroll ranges above it.
+	panelLines := panelLineLimit(panelLayout, a.message != "")
 	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
-	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message,max(12,l.Width-4)))+"\n") }
-	for strings.Count(b.String(),"\n") < l.TickerY-1 { b.WriteString("\n") }
-	ticker := tickerText(a.state, max(12,l.Width-4), a.uiFrame)
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#B8A46E")).Width(max(12,l.Width-4)).MaxHeight(1).Render(ticker)+"\n")
-	b.WriteString(labelStyle.Render("X/P exploit  S store  M messages  1–3 choose  I ignore  V save  H help  Q quit"))
+	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message, max(12, l.Width-4)))+"\n") }
+	for strings.Count(b.String(), "\n") < l.TickerY-footerRows { b.WriteString("\n") }
+	b.WriteString(labelStyle.Render(strings.Join(keyboardLines, "\n")))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
 }
 
 
+func capacityUtilizationBar(filled, width int) string {
+	width = max(0, width)
+	filled = min(width, max(0, filled))
+	return strings.Repeat("─", filled) + strings.Repeat(" ", width-filled)
+}
+
+// printerProgressBar keeps the unfilled track dashed and fills it with solid
+// segments. The terminal dollar marker is rendered separately for its feedback color.
+func printerProgressBar(filled, width int) string {
+	width = max(0, width)
+	filled = min(width, max(0, filled))
+	return strings.Repeat("─", filled) + strings.Repeat("━", width-filled)
+}
+
+// printerProgressDisplayBar adds the original triangle at the current fill edge.
+// A completed bar keeps the triangle in its final cell rather than dropping it.
+func printerProgressDisplayBar(filled, width int) string {
+	bar := []rune(printerProgressBar(filled, width))
+	if len(bar) == 0 {
+		return ""
+	}
+	markerAt := min(max(0, filled), len(bar)-1)
+	bar[markerAt] = '▶'
+	return string(bar)
+}
+
+func printerDollarColor(batch game.BatchState) lipgloss.Color {
+	if batch.PlayerQueuedDollars > 0 {
+		return amber
+	}
+	return printerTrackColor
+}
+
+func printerEndColor(batch game.BatchState) lipgloss.Color {
+	switch {
+	case batch.PlayerQueuedDollars > 0:
+		return green
+	case batch.QueuedDollars > 0:
+		return amber
+	default:
+		return printerTrackColor
+	}
+}
+
 func (a *App) cashPanelView(width int) string {
-	cash := labelStyle.Render("CASH ON HAND")+"  "+lipgloss.NewStyle().Foreground(amber).Bold(true).Render("$"+money(a.state.CashOnHand))+
-		labelStyle.Render(" / $"+money(a.state.CashCapacity))+"    "+labelStyle.Render("TOTAL PRINTED ")+lipgloss.NewStyle().Foreground(ink).Render("$"+money(a.state.TotalPrinted))+
-		"\n"+labelStyle.Render("EST. NET WORTH  ")+lipgloss.NewStyle().Foreground(ink).Bold(true).Render("$"+money(a.state.EstimatedNetWorth))
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(muted).Padding(0,2).Width(max(20,min(width-6,60))).Render(cash)
+	boxWidth := max(28,min(width-4,68))
+	inner := boxWidth-2
+	title := " CAPITAL "
+	top := "┌─"+title+strings.Repeat("─",max(0,inner-len(title)-1))+"┐"
+	cashLine := " CAPITAL ON HAND  $"+money(a.state.CashOnHand)
+	capacityLine := " CAPACITY         $"+money(a.state.CashCapacity)
+	financialLine := " EST. NET WORTH ~$"+money(a.state.EstimatedNetWorth)+"  |  PRINTED $"+money(a.state.TotalPrinted)
+	util := 0
+	if a.state.CashCapacity > 0 { util = int(a.state.CashOnHand*100/a.state.CashCapacity) }
+	barWidth := max(8,inner-16)
+	filled := min(barWidth,max(0,util*barWidth/100))
+	bar := capacityUtilizationBar(filled, barWidth)
+	barColor := green
+	if util >= 80 { barColor = amber }
+	if util >= 100 { barColor = red }
+	status := fmt.Sprintf("%d%% UTILIZED",util)
+	if util >= 100 { status = fmt.Sprintf("%d%% OVERFLOW",util) }
+	barLine := " "+bar+"  "+status
+	rows := []string{
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(amber).Bold(true).Render(truncate(cashLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(cashLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(ink).Render(truncate(capacityLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(capacityLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(cyan).Bold(true).Render(truncate(financialLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(financialLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+		lipgloss.NewStyle().Foreground(muted).Render("│")+lipgloss.NewStyle().Foreground(barColor).Render(truncate(barLine,inner))+strings.Repeat(" ",max(0,inner-lipgloss.Width(truncate(barLine,inner))))+lipgloss.NewStyle().Foreground(muted).Render("│"),
+	}
+	return lipgloss.NewStyle().Width(boxWidth).Render(strings.Join(append([]string{top},append(rows,"└"+strings.Repeat("─",inner)+"┘")...), "\n"))
 }
 
 func (a *App) printPanel(l uiLayout) string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("PRINT OPERATIONS")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d",a.state.Batch.Number))+"\n")
-	b.WriteString(labelStyle.Render("QUEUE STATUS  "))
-	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY")) } else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")) }
+	b.WriteString(titleStyle.Render("MAIN  /  PRINT OPERATIONS")+"   ")
+	if a.state.Status == game.RunFederal || a.state.Status == game.RunSandbox { b.WriteString(okStyle.Render("SYSTEM READY")) } else { b.WriteString(dangerStyle.Render("SYSTEM OFFLINE")) }
 	b.WriteString("\n")
-	width := max(10,min(l.Width-12,54))
-	progress := a.state.Batch.Progress*width/game.BatchCycleTicks
-	if progress < 0 { progress=0 }; if progress > width { progress=width }
-	bar := strings.Repeat("━",progress)+strings.Repeat("─",width-progress)
-	marker := "▶"
-	if a.state.Batch.WindowOpen { marker = "◆" }
-	if progress < width { runes := []rune(bar); runes[progress] = []rune(marker)[0]; bar = string(runes) }
-	b.WriteString("  "+lineStyle.Render(bar)+"\n")
-	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%",a.state.Batch.Progress*100/game.BatchCycleTicks))+"\n\n")
-	if a.state.Batch.WindowOpen {
-		b.WriteString("  "+okStyle.Render("[X]  INJECT")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d",a.state.Batch.QueuedDollars))+"\n")
-	} else {
-		b.WriteString("  "+labelStyle.Render("[X]  INJECT")+"   "+labelStyle.Render("—") +"\n")
+	b.WriteString(labelStyle.Render(fmt.Sprintf("RUN: %-8s  UPTIME: %s  EXPOSURE: %02d/100", strings.ToUpper(string(a.state.Status)), formatUptime(a.state.UptimeSeconds), a.state.Risk))+"\n")
+	b.WriteString(a.cashPanelView(l.Width)+"\n\n")
+	b.WriteString(titleStyle.Render("PRINT WINDOW")+"   "+labelStyle.Render(fmt.Sprintf("BATCH %05d", a.state.Batch.Number))+"\n")
+	if a.state.Batch.WindowOpen { b.WriteString(okStyle.Render("● OPPORTUNITY OPEN")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n")
+	} else { b.WriteString(labelStyle.Render("● ROUTINE CYCLE")+"   "+labelStyle.Render(fmt.Sprintf("QUEUED: %d", a.state.Batch.QueuedDollars))+"\n") }
+	width := max(10, min(l.Width-12, 54))
+	endFlashActive := time.Now().Before(a.printerEndFlashUntil)
+	displayProgress := a.state.Batch.Progress
+	if endFlashActive { displayProgress = game.BatchCycleTicks }
+	progress := displayProgress*width/game.BatchCycleTicks
+	progress = min(width, max(0, progress))
+	bar := printerProgressDisplayBar(progress, width)
+	dollarStyle := lipgloss.NewStyle().Foreground(printerDollarColor(a.state.Batch))
+	if endFlashActive {
+		switch a.printerEndFlashColor {
+		case green:
+			dollarStyle = lipgloss.NewStyle().Foreground(green).Bold(true)
+		case amber:
+			dollarStyle = lipgloss.NewStyle().Foreground(amber).Bold(true)
+		default:
+			dollarStyle = lipgloss.NewStyle().Foreground(printerTrackColor)
+		}
 	}
-	b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome,max(12,l.Width-8)))+"\n")
-	b.WriteString("  "+selectedStyle.Render("[S] Store")+"   ")
-	if a.state.EmailUnlocked { b.WriteString(selectedStyle.Render("[M] Messages")) }
+	b.WriteString("  "+lineStyle.Render(bar)+dollarStyle.Render("$")+"\n")
+	b.WriteString(labelStyle.Render(fmt.Sprintf("  SPOOLING  %02d%%", displayProgress*100/game.BatchCycleTicks))+"\n")
+	injectStyle := labelStyle
+	if a.state.Batch.WindowOpen { injectStyle = okStyle }
+	if a.injectHeldRed || time.Now().Before(a.injectFlashUntil) { injectStyle = dangerStyle.Bold(true) }
+	b.WriteString("  "+injectStyle.Render("[X]  INJECT")+"\n")
+	outcome := strings.ToLower(a.state.Batch.LastOutcome)
+	if a.state.Batch.LastOutcome != "" && !strings.Contains(outcome, "queue moved on") && !strings.Contains(outcome, "no instruction was sent") {
+		b.WriteString("  "+labelStyle.Render(truncate(a.state.Batch.LastOutcome, max(12, l.Width-8)))+"\n")
+	}
+	b.WriteString("\n"+selectedStyle.Render("[U] UPGRADES")+"   ")
+	rackLabel := "[R] HARDWARE RACK"
+	switch {
+	case a.hasReadyModules() && a.uiFrame%6 < 3:
+		b.WriteString(okStyle.Render(rackLabel)+"\n")
+	case a.hasReadyModules():
+		b.WriteString(labelStyle.Render(rackLabel)+"\n")
+	default:
+		b.WriteString(selectedStyle.Render(rackLabel)+"\n")
+	}
+	if a.hasJammedRackModule() {
+		b.WriteString(dangerStyle.Render("The seized legacy controller blocks every usable bay."))
+	} else {
+		b.WriteString(labelStyle.Render("Three hardware bays available for owned modules."))
+	}
 	return b.String()
+}
+
+func (a *App) upgradesPanel(l uiLayout) string {
+	leftWidth, rightWidth := paneWidths(l)
+	paneHeight := panelLineLimit(l, a.message != "")
+	var left, right strings.Builder
+	for i, spec := range game.ModuleCatalog {
+		m := a.state.Module(spec.ID)
+		revision := ""
+		if m != nil && m.Level > 0 {
+			revision = fmt.Sprintf(" Rev %02d", m.Level)
+		}
+		marker := " "
+		if i == a.selectedUpgrade { marker = "›" }
+		nameWidth := max(8, leftWidth-4-lipgloss.Width(revision))
+		name := truncate(marker+" "+spec.Name, nameWidth)
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(spec.Color))
+		if i == a.selectedUpgrade { style = style.Bold(true).Underline(true) }
+		left.WriteString(padCells(style.Render(name), labelStyle.Render(revision), leftWidth-2)+"\n")
+	}
+
+	idx := max(0, min(len(game.ModuleCatalog)-1, a.selectedUpgrade))
+	spec := game.ModuleCatalog[idx]
+	m := a.state.Module(spec.ID)
+	level := 0
+	installed := false
+	if m != nil {
+		level = m.Level
+		installed = m.Installed
+	}
+
+	moduleColor := lipgloss.Color(spec.Color)
+	right.WriteString(lipgloss.NewStyle().Foreground(moduleColor).Bold(true).Render(spec.Name)+"\n")
+	right.WriteString(lipgloss.NewStyle().Foreground(moduleColor).Render(strings.Repeat("-", lipgloss.Width(spec.Name)))+"\n\n")
+	right.WriteString(wrapText(spec.Description, max(18, rightWidth-4))+"\n\n")
+
+	// Keep revision, suspicion, cost, and any eligibility note together as one
+	// compact metadata block, separate from the description and purchase action.
+	right.WriteString(labelStyle.Render(fmt.Sprintf("CURRENT REVISION: %02d / %02d", level, spec.MaxLevel))+"\n")
+	right.WriteString(labelStyle.Render(fmt.Sprintf("SUSPICION PROFILE: %d / 5", spec.Suspicion))+"\n")
+	canUpgrade := level < spec.MaxLevel && !(spec.ID == "obfuscation" && a.state.Risk < 25)
+	if level >= spec.MaxLevel {
+		if installed {
+			right.WriteString(okStyle.Render("MAXIMUM REVISION INSTALLED")+"\n")
+		} else {
+			right.WriteString(okStyle.Render("MAXIMUM REVISION OWNED")+"\n")
+			right.WriteString(labelStyle.Render("INSTALL IT FROM HARDWARE RACK")+"\n")
+		}
+	} else {
+		cost := spec.Cost * int64(level+1)
+		costLabel := "ACQUISITION COST: "
+		if level > 0 { costLabel = "NEXT REVISION COST: " }
+		costColor := red
+		if a.state.CashOnHand >= cost { costColor = green }
+		right.WriteString(labelStyle.Render(costLabel)+lipgloss.NewStyle().Foreground(costColor).Bold(true).Render("$"+money(cost))+"\n")
+		if spec.ID == "obfuscation" && a.state.Risk < 25 {
+			right.WriteString(dangerStyle.Render("REQUIREMENT: scrutiny 25+")+"\n")
+		} else if level > 0 {
+			if !installed {
+				right.WriteString(okStyle.Render("READY FOR INSTALLATION IN HARDWARE RACK")+"\n")
+			} else {
+				right.WriteString(labelStyle.Render("PURCHASING THIS REVISION REQUIRES REINSTALLATION")+"\n")
+			}
+		}
+	}
+
+	if canUpgrade {
+		right.WriteString("\n")
+		buyLabel := "[UPGRADE]"
+		if a.upgradeBuyArmed {
+			buyLabel = "[CONFIRM UPGRADE]"
+			right.WriteString(okStyle.Render(buyLabel)+"\n")
+		} else {
+			right.WriteString(selectedStyle.Render(buyLabel)+"\n")
+		}
+	}
+
+	// The navigation hint stays on the final interior row regardless of how
+	// much detail the selected module needs.
+	contentHeight := max(1, paneHeight-2)
+	rightLines := strings.Split(strings.TrimSuffix(right.String(), "\n"), "\n")
+	if len(rightLines) > contentHeight-1 {
+		rightLines = rightLines[:contentHeight-1]
+	}
+	for len(rightLines) < contentHeight-1 {
+		rightLines = append(rightLines, "")
+	}
+	rightLines = append(rightLines, labelStyle.Render("[R] HARDWARE RACK   [ESC] RETURN TO OPERATIONS"))
+	right.Reset()
+	right.WriteString(strings.Join(rightLines, "\n"))
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		windowPane("MODULE CATALOG", left.String(), leftWidth, paneHeight),
+		" ",
+		windowPane("MODULE DETAILS", right.String(), rightWidth, paneHeight))
+}
+const rackBayHeight = 6
+
+func visibleRackBays(paneHeight int) int {
+	// Reserve one row for the rack header and one for the action hint.
+	return max(1, (max(1, paneHeight-2)-2)/rackBayHeight)
+}
+
+// rackBays models the rack as physical slots, not a list of cards. Ordinary
+// rackBays returns installed hardware first, unlocked empty bays next, and the
+// current jammed controller last. Each specialist removal unlocks exactly one
+// usable slot while another increasingly expensive obstruction remains.
+func (a *App) rackBays() []*game.ModuleState {
+	var ordinary []*game.ModuleState
+	var jammed *game.ModuleState
+	for i := range a.state.Modules {
+		m := &a.state.Modules[i]
+		if !m.Installed {
+			continue
+		}
+		if m.Jammed {
+			jammed = m
+		} else {
+			ordinary = append(ordinary, m)
+		}
+	}
+
+	// Preserve modules installed by older saves, but never create bays beyond
+	// the number unlocked by specialist removals.
+	capacity := max(a.state.RackSlotsUnlocked, len(ordinary))
+	bays := make([]*game.ModuleState, 0, capacity+1)
+	bays = append(bays, ordinary...)
+	for len(bays) < capacity {
+		bays = append(bays, nil)
+	}
+	if jammed != nil {
+		bays = append(bays, jammed)
+	}
+	return bays
+}
+func (a *App) rackPanel(l uiLayout) string {
+	var out strings.Builder
+	out.WriteString(titleStyle.Render("MAIN  /  HARDWARE RACK")+"\n")
+	bays := a.rackBays()
+	occupied := 0
+	for _, bay := range bays {
+		if bay != nil && !bay.Jammed { occupied++ }
+	}
+	usableSlots := max(a.state.RackSlotsUnlocked, occupied)
+	out.WriteString(labelStyle.Render(fmt.Sprintf("RACK BAY ARRAY: %02d SLOTS  ·  IN USE: %02d", usableSlots, occupied))+"\n")
+	leftWidth, rightWidth := paneWidths(l)
+	paneHeight := max(4, panelLineLimit(l, a.message != "")-2)
+	visibleLeft := max(1, paneHeight-2)
+	visibleRight := visibleRackBays(paneHeight)
+	var left strings.Builder
+
+	readySpecs := a.rackReadyModules()
+	start := min(max(0, a.rackLeftScroll), max(0, len(readySpecs)-visibleLeft))
+	end := min(len(readySpecs), start+visibleLeft)
+	leftInner := leftWidth-2
+	nameWidth := max(1, leftInner-2)
+	for i := start; i < end; i++ {
+		spec := readySpecs[i]
+		name := spec.Name
+		if a.rackCatalogSelected && i == a.selectedUpgrade {
+			name = "["+name+"]"
+		}
+		row := padCells(name, "", nameWidth)+" >"
+		rowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color(spec.Color)).Width(leftInner)
+		if spec.ID == a.rackRejectedModule && time.Now().Before(a.rackRejectFlashUntil) && a.uiFrame%4 < 2 {
+			rowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Background(red).Bold(true).Width(leftInner)
+		}
+		left.WriteString(rowStyle.Render(row)+"\n")
+	}
+	if len(readySpecs) == 0 {
+		left.WriteString(labelStyle.Width(leftInner).Render("NO MODULES READY FOR INSTALLATION")+"\n")
+	}
+
+	startR := min(max(0, a.rackRightScroll), max(0, len(bays)-visibleRight))
+	endR := min(len(bays), startR+visibleRight)
+	paneInner := rightWidth-2
+	contentWidth := paneInner-1 // reserve the final interior column for the vertical scrollbar
+	cardWidth := max(20, min(contentWidth, 54))
+	cardInner := cardWidth-2
+	cardPad := max(0, (contentWidth-cardWidth)/2)
+	rightLines := []string{titleStyle.Render("INSTALLED RACK")}
+	for i := startR; i < endR; i++ {
+		m := bays[i]
+		var card []string
+		name, color := "", teal
+		if m == nil {
+			card = emptyRackBayCard(cardInner)
+		} else {
+			name = m.ID
+			for _, spec := range game.ModuleCatalog {
+				if spec.ID == m.ID {
+					name, color = spec.Name, lipgloss.Color(spec.Color)
+					break
+				}
+			}
+			if m.ID == "legacy_controller" {
+				name, color = "LEGACY PRINT CONTROLLER", orange
+				if a.state.RackJammedRemovals > 0 {
+					name = fmt.Sprintf("LEGACY PRINT CONTROLLER %02d", a.state.RackJammedRemovals+1)
+				}
+			}
+			selected := i == a.selectedRackModule && a.rackFocusRight
+			animationNow := time.Now()
+			bootProgress, bootStatus := 0, ""
+			if m.Booting {
+				bootProgress, bootStatus = a.moduleBootDisplay(*m, animationNow)
+			}
+			ledOn := !m.Jammed && !m.Booting && !m.ActivatedFlash && a.moduleLEDOn(m.ID, animationNow)
+			card = rackModuleCard(*m, name, cardInner, a.state.JammedLegacyRemovalCost(), a.rackRemovalArmedModule == m.ID, a.uiFrame, bootProgress, bootStatus, ledOn)
+			for row := range card {
+				paddedLine := strings.Repeat(" ", cardPad)+card[row]+strings.Repeat(" ", max(0, contentWidth-cardPad-lipgloss.Width(card[row])))
+				if m.Jammed {
+					card[row] = orangeRackStyle(selected).Render(paddedLine)
+				} else {
+					style := lipgloss.NewStyle().Foreground(color)
+					if selected { style = style.Bold(true) }
+					card[row] = style.Render(paddedLine)
+				}
+			}
+		}
+		if m == nil {
+			for row := range card {
+				paddedLine := strings.Repeat(" ", cardPad)+card[row]+strings.Repeat(" ", max(0, contentWidth-cardPad-lipgloss.Width(card[row])))
+				card[row] = labelStyle.Render(paddedLine)
+			}
+		}
+		rightLines = append(rightLines, card...)
+	}
+	leftPane := windowPane("MODULES", left.String(), leftWidth, paneHeight)
+	rightPane := windowPaneWithVerticalScrollbar("RACK BUS", rightLines, rightWidth, paneHeight, len(bays), startR, visibleRight)
+	out.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftPane, " ", rightPane))
+	return out.String()
+}
+
+
+// visualSeed creates separate, repeatable random streams for each module visual.
+func visualSeed(id string, now time.Time) uint64 {
+	seed := uint64(now.UnixNano()) ^ uint64(0x9e3779b97f4a7c15)
+	for _, b := range []byte(id) {
+		seed ^= uint64(b)
+		seed *= uint64(0x100000001b3)
+	}
+	if seed == 0 { return uint64(0x2545f4914f6cdd1d) }
+	return seed
+}
+
+func nextVisualRandom(seed *uint64) uint64 {
+	x := *seed
+	x ^= x << 13
+	x ^= x >> 7
+	x ^= x << 17
+	if x == 0 { x = uint64(0x2545f4914f6cdd1d) }
+	*seed = x
+	return x
+}
+
+func randomVisualDelay(seed *uint64, minDelay, maxDelay time.Duration) time.Duration {
+	if maxDelay <= minDelay { return minDelay }
+	const step = 100 * time.Millisecond
+	steps := int64((maxDelay-minDelay)/step) + 1
+	return minDelay + time.Duration(nextVisualRandom(seed)%uint64(steps))*step
+}
+
+// Each phase lasts at most 1.6 seconds. Even eight phases therefore fit in
+// 12.8 seconds, leaving comfortable headroom under the 15-second target.
+func randomBootPhaseDelay(seed *uint64) time.Duration {
+	return randomVisualDelay(seed, 700*time.Millisecond, 1600*time.Millisecond)
+}
+
+// chooseBootStatusSequence shuffles the full message pool, then chooses 4–8
+// entries. A module never repeats a status message during a single boot.
+func chooseBootStatusSequence(seed *uint64) []string {
+	pool := append([]string(nil), bootStatusMessages...)
+	for i := len(pool)-1; i > 0; i-- {
+		j := int(nextVisualRandom(seed) % uint64(i+1))
+		pool[i], pool[j] = pool[j], pool[i]
+	}
+	count := 4 + int(nextVisualRandom(seed)%5)
+	return append([]string(nil), pool[:count]...)
+}
+
+// chooseBootProgressMilestones creates a randomized progress "shape" for one
+// boot. Curves vary between an early launch, a mid-boot surge, and a two-block
+// climb. Every curve leaves room for a slow final approach instead of treating
+// the loading bar like a steady countdown.
+func chooseBootProgressMilestones(seed *uint64, phaseCount int) []int {
+	if phaseCount <= 0 {
+		return nil
+	}
+	milestones := make([]int, phaseCount)
+	if phaseCount == 1 {
+		return milestones
+	}
+
+	randomInt := func(low, high int) int {
+		if high <= low {
+			return low
+		}
+		return low + int(nextVisualRandom(seed)%uint64(high-low+1))
+	}
+	finalTarget := randomInt(94, 97)
+	milestones[phaseCount-1] = finalTarget
+
+	// Advance between established checkpoints in small, controlled blocks.
+	// The minimum spacing leaves room for the independent in-phase creep.
+	fillGradual := func(startIndex int) {
+		for i := startIndex; i < phaseCount-1; i++ {
+			previous := milestones[i-1]
+			maxTarget := finalTarget - 3*(phaseCount-1-i)
+			milestones[i] = min(previous+randomInt(3, 6), maxTarget)
+		}
+	}
+
+	switch int(nextVisualRandom(seed) % 3) {
+	case 0:
+		// Early launch: the opening barely moves, then the bar leaps forward.
+		upper := min(92, finalTarget-3*(phaseCount-2))
+		milestones[1] = randomInt(52, upper)
+		fillGradual(2)
+
+	case 1:
+		// Mid/late surge: several small advances lead into one massive block.
+		surgeIndex := randomInt(2, phaseCount-2)
+		milestones[1] = randomInt(2, 7)
+		for i := 2; i < surgeIndex; i++ {
+			milestones[i] = milestones[i-1] + randomInt(2, 3)
+		}
+		previous := milestones[surgeIndex-1]
+		lower := max(52, previous+15)
+		upper := min(92, finalTarget-3*(phaseCount-1-surgeIndex))
+		milestones[surgeIndex] = randomInt(lower, upper)
+		fillGradual(surgeIndex + 1)
+
+	default:
+		// Two-block climb: a modest jump, a second larger surge, then a crawl.
+		milestones[1] = randomInt(2, 7)
+		if phaseCount == 4 {
+			milestones[2] = randomInt(42, 70)
+			break
+		}
+		milestones[2] = randomInt(28, 38)
+		surgeIndex := randomInt(3, phaseCount-2)
+		for i := 3; i < surgeIndex; i++ {
+			milestones[i] = milestones[i-1] + randomInt(2, 4)
+		}
+		previous := milestones[surgeIndex-1]
+		lower := max(60, previous+8)
+		upper := min(86, finalTarget-3*(phaseCount-1-surgeIndex))
+		milestones[surgeIndex] = randomInt(lower, upper)
+		fillGradual(surgeIndex + 1)
+	}
+
+	return milestones
+}
+
+func moduleColorForID(id string) lipgloss.Color {
+	for _, spec := range game.ModuleCatalog {
+		if spec.ID == id { return lipgloss.Color(spec.Color) }
+	}
+	return teal
+}
+
+func (a *App) ensureModuleLED(id string, now time.Time) *moduleLEDAnimation {
+	if a.moduleLEDs == nil { a.moduleLEDs = make(map[string]*moduleLEDAnimation) }
+	if animation := a.moduleLEDs[id]; animation != nil { return animation }
+	seed := visualSeed(id, now)
+	animation := &moduleLEDAnimation{random: seed}
+	animation.nextToggleAt = now.Add(randomVisualDelay(&animation.random, 100*time.Millisecond, 400*time.Millisecond))
+	a.moduleLEDs[id] = animation
+	return animation
+}
+
+func (a *App) moduleLEDOn(id string, now time.Time) bool {
+	return a.ensureModuleLED(id, now).on
+}
+
+func (a *App) ensureModuleBootAnimation(m game.ModuleState, now time.Time) *moduleBootAnimation {
+	if a.moduleBoots == nil {
+		a.moduleBoots = make(map[string]*moduleBootAnimation)
+	}
+	if animation := a.moduleBoots[m.ID]; animation != nil {
+		return animation
+	}
+
+	seed := visualSeed(m.ID, now)
+	progressRandom := seed ^ uint64(0xa0761d6478bd642f)
+	statusRandom := seed ^ uint64(0xe7037ed1a0b428db)
+	statusMessages := chooseBootStatusSequence(&statusRandom)
+	animation := &moduleBootAnimation{
+		// Each boot gets its own curve and status sequence. The curve controls
+		// the broad shape; small random movements add texture between phases.
+		progress:           0,
+		statusIndex:        0,
+		statusMessages:     statusMessages,
+		progressMilestones: chooseBootProgressMilestones(&progressRandom, len(statusMessages)),
+		progressRandom:     progressRandom,
+		statusRandom:       statusRandom,
+	}
+	animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 200*time.Millisecond, 900*time.Millisecond))
+	animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
+	a.moduleBoots[m.ID] = animation
+	return animation
+}
+
+func (a *App) moduleBootDisplay(m game.ModuleState, now time.Time) (int, string) {
+	animation := a.ensureModuleBootAnimation(m, now)
+	statusIndex := min(len(animation.statusMessages)-1, max(0, animation.statusIndex))
+	return animation.progress, animation.statusMessages[statusIndex]
+}
+
+// advanceModuleBootAnimations advances each randomized progress curve. During a
+// status phase, the bar can creep only partway toward the next checkpoint; the
+// status change then delivers the larger jump. The final phase inches toward
+// 99% before the same phase timer completes activation.
+func (a *App) advanceModuleBootAnimations(now time.Time) {
+	for i := range a.state.Modules {
+		m := &a.state.Modules[i]
+		if !m.Installed || m.Jammed || !m.Booting {
+			delete(a.moduleBoots, m.ID)
+			continue
+		}
+		animation := a.ensureModuleBootAnimation(*m, now)
+
+		if !now.Before(animation.nextProgressAt) {
+			roll := nextVisualRandom(&animation.progressRandom) % 100
+			step := 0
+			switch {
+			case roll < 54:
+				step = 0 // let the current phase breathe
+			case roll < 82:
+				step = 1
+			case roll < 96:
+				step = 2
+			default:
+				step = 3
+			}
+
+			ceiling := 99
+			if animation.statusIndex < len(animation.progressMilestones)-1 {
+				current := animation.progressMilestones[animation.statusIndex]
+				next := animation.progressMilestones[animation.statusIndex+1]
+				// Preserve most of the upcoming jump for the status transition.
+				creep := max(1, (next-current)/3)
+				ceiling = min(next-1, current+creep)
+			}
+			animation.progress = min(ceiling, animation.progress+step)
+			animation.nextProgressAt = now.Add(randomVisualDelay(&animation.progressRandom, 150*time.Millisecond, 850*time.Millisecond))
+		}
+
+		if !now.Before(animation.nextStatusAt) {
+			// The last unique message gets a full dwell too. Activation happens
+			// only when that final phase expires, even if progress already reads 99%.
+			if animation.statusIndex+1 >= len(animation.statusMessages) {
+				animation.progress = 100
+				if err := a.state.CompleteModuleBoot(m.ID, now); err == nil {
+					delete(a.moduleBoots, m.ID)
+					delete(a.moduleLEDs, m.ID)
+				}
+				continue
+			}
+			animation.statusIndex++
+			animation.progress = animation.progressMilestones[animation.statusIndex]
+			animation.nextStatusAt = now.Add(randomBootPhaseDelay(&animation.statusRandom))
+		}
+	}
+}
+
+func (a *App) advanceRackAnimations(now time.Time) {
+	a.advanceModuleBootAnimations(now)
+	for i := range a.state.Modules {
+		m := &a.state.Modules[i]
+		if !m.Installed || m.Jammed || m.Booting {
+			delete(a.moduleLEDs, m.ID)
+			continue
+		}
+		delete(a.moduleBoots, m.ID)
+		if m.ActivatedFlash { continue }
+		led := a.ensureModuleLED(m.ID, now)
+		if now.Before(led.nextToggleAt) { continue }
+		led.on = !led.on
+		if led.on {
+			// Real drive activity tends to be a short pulse.
+			led.nextToggleAt = now.Add(randomVisualDelay(&led.random, 100*time.Millisecond, 200*time.Millisecond))
+		} else {
+			// Quiet gaps vary; occasional longer pauses make each module feel busy
+			// on its own schedule rather than like a synchronized dashboard light.
+			pause := randomVisualDelay(&led.random, 100*time.Millisecond, 500*time.Millisecond)
+			if nextVisualRandom(&led.random)%4 == 0 {
+				pause += randomVisualDelay(&led.random, 300*time.Millisecond, 800*time.Millisecond)
+			}
+			led.nextToggleAt = now.Add(pause)
+		}
+	}
+}
+
+// rackModuleCard returns a six-row hardware face regardless of boot state.
+// Its title sits inside the enclosure; the boot bar is replaced by an HDD-style
+// status LED once initialization finishes, keeping the bay dimensions stable.
+func rackModuleCard(m game.ModuleState, name string, inner int, removalCost int64, removalArmed bool, frame int64, bootProgress int, bootStatus string, ledOn bool) []string {
+	top := "┌"+strings.Repeat("─", inner)+"┐"
+	if m.Jammed {
+		button := fmt.Sprintf("$%d - [REMOVE]", removalCost/100)
+		if removalArmed {
+			button = selectedStyle.Render(button)
+		} else {
+			button = dangerStyle.Render(button)
+		}
+		return []string{
+			top,
+			"│"+padCells(" "+truncate(name, max(1,inner-1)), "", inner)+"│",
+			"│"+padCells(" JAMMED - SPECIALIST REMOVAL", "", inner)+"│",
+			"│"+strings.Repeat(" ", inner)+"│",
+			"│"+padCells("", button, inner)+orangeRackStyle(false).Render("│"),
+			"└"+strings.Repeat("─", inner)+"┘",
+		}
+	}
+	remove := "[X]"
+	title := "│"+padCells(" "+truncate(name, max(1,inner-5)), remove, inner)+"│"
+	revLine := "│"+padCells(fmt.Sprintf(" REV %02d", m.Level), moduleGain(m.ID, m.Level), inner)+"│"
+	statusLine := ""
+	if m.Booting {
+		if bootStatus == "" { bootStatus = bootStatusMessages[0] }
+		statusLine = "│"+padCells(" "+bootStatus, "", inner)+"│"
+	} else if m.ActivatedFlash {
+		statusLine = "│"+padCells(" ACTIVATED!", "", inner)+"│"
+	} else {
+		flicker := "*  *  *  *  *"
+		if frame%7 < 3 { flicker = "* *   *  * *" }
+		statusLine = "│"+padCells(" "+flicker, "", inner)+"│"
+	}
+	activityLine := ""
+	switch {
+	case m.Booting:
+		barWidth := max(1, inner-3)
+		percent := min(99, max(0, bootProgress))
+		filled := min(barWidth, max(0, percent*barWidth/100))
+		activityLine = "│"+padCells(" ["+strings.Repeat("█",filled)+strings.Repeat("·",barWidth-filled)+"]", "", inner)+"│"
+	case m.ActivatedFlash:
+		barWidth := max(1, inner-3)
+		activityLine = "│"+padCells(" ["+strings.Repeat("█",barWidth)+"]", "", inner)+"│"
+	default:
+		led := labelStyle.Render(".")
+		if ledOn {
+			led = okStyle.Render(".")
+		}
+		// Rendering the LED injects its own ANSI reset. Reapply the hardware
+		// color to the trailing enclosure edge so it never falls back to grey.
+		rightEdge := lipgloss.NewStyle().Foreground(moduleColorForID(m.ID)).Render("│")
+		activityLine = "│"+strings.Repeat(" ", max(0,inner-1))+led+rightEdge
+	}
+	return []string{top, title, revLine, statusLine, activityLine, "└"+strings.Repeat("─",inner)+"┘"}
+}
+
+func emptyRackBayCard(inner int) []string {
+	return []string{
+		"┌"+strings.Repeat("─", inner)+"┐",
+		"│"+strings.Repeat(" ", inner)+"│",
+		"│"+strings.Repeat(" ", inner)+"│",
+		"│"+strings.Repeat(" ", inner)+"│",
+		"│"+strings.Repeat(" ", inner)+"│",
+		"└"+strings.Repeat("─", inner)+"┘",
+	}
+}
+
+func orangeRackStyle(selected bool) lipgloss.Style {
+	style := lipgloss.NewStyle().Foreground(orange)
+	if selected { style = style.Bold(true) }
+	return style
+}
+
+func rackCardHeight(game.ModuleState) int { return rackBayHeight }
+
+
+func windowPane(title, content string, width, height int) string {
+	width = max(18, width)
+	height = max(3, height)
+	inner := width-2
+	topLabel := "┌─ "+title+" "
+	top := topLabel+strings.Repeat("─", max(0, width-lipgloss.Width(topLabel)-1))+"┐"
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	contentHeight := height-2
+	if len(lines) > contentHeight { lines = lines[:contentHeight] }
+	for len(lines) < contentHeight { lines = append(lines, "") }
+	var out strings.Builder
+	out.WriteString(labelStyle.Render(top)+"\n")
+	for _, line := range lines {
+		if lipgloss.Width(line) > inner { line = truncate(line, inner) }
+		out.WriteString(labelStyle.Render("│")+line+strings.Repeat(" ", max(0, inner-lipgloss.Width(line)))+labelStyle.Render("│")+"\n")
+	}
+	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
+	return out.String()
+}
+
+
+func windowPaneWithVerticalScrollbar(title string, content []string, width, height, total, start, visible int) string {
+	width = max(18, width)
+	height = max(3, height)
+	inner := width-2
+	contentWidth := inner-1
+	topLabel := "┌─ "+title+" "
+	top := topLabel+strings.Repeat("─", max(0, width-lipgloss.Width(topLabel)-1))+"┐"
+	contentHeight := height-2
+
+	// The scrollbar rail is one cell inside the right border. Its thumb tracks
+	// bay selection/scroll position vertically, rather than using a horizontal
+	// progress strip in the rack title.
+	thumbHeight := contentHeight
+	thumbStart := 0
+	if total > visible {
+		thumbHeight = max(1, contentHeight*visible/max(1,total))
+		thumbStart = min(max(0,contentHeight-thumbHeight), start*max(1,contentHeight-thumbHeight)/max(1,total-visible))
+	}
+	var out strings.Builder
+	out.WriteString(labelStyle.Render(top)+"\n")
+	for row := 0; row < contentHeight; row++ {
+		line := ""
+		if row < len(content) { line = content[row] }
+		if lipgloss.Width(line) > contentWidth { line = truncate(line, contentWidth) }
+		line += strings.Repeat(" ", max(0,contentWidth-lipgloss.Width(line)))
+		scrollChar := "░"
+		scrollStyle := labelStyle
+		if row >= thumbStart && row < thumbStart+thumbHeight {
+			scrollChar = "█"
+			scrollStyle = okStyle
+		}
+		out.WriteString(labelStyle.Render("│")+line+scrollStyle.Render(scrollChar)+labelStyle.Render("│")+"\n")
+	}
+	out.WriteString(labelStyle.Render("└"+strings.Repeat("─", inner)+"┘"))
+	return out.String()
+}
+
+func paneWidths(l uiLayout) (int, int) {
+	available := max(40, l.Width-4)
+	left := max(24, min(38, available/3))
+	right := max(18, available-left-1)
+	return left, right
+}
+
+func panelLineLimit(l uiLayout, hasMessage bool) int {
+	n := max(4, l.TickerY-l.ContentY-2)
+	if hasMessage { n-- }
+	return n
+}
+
+func rackScrollbar(total, start, visible int) string {
+	const height = 6
+	if total <= visible { return "[══════]" }
+	thumb := max(1, height*visible/total)
+	pos := min(height-thumb, max(0, start*height/max(1, total-visible)))
+	return "["+strings.Repeat("░", pos)+strings.Repeat("█", thumb)+strings.Repeat("░", height-pos-thumb)+"]"
+}
+
+func padCells(left, right string, width int) string {
+	left = truncate(left, max(0, width-lipgloss.Width(right)))
+	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
+	if lipgloss.Width(left)+lipgloss.Width(right) >= width { gap = 0 }
+	return left+strings.Repeat(" ", gap)+right+strings.Repeat(" ", max(0, width-lipgloss.Width(left)-lipgloss.Width(right)-gap))
 }
 
 func (a *App) storePanel(l uiLayout) string {
@@ -477,6 +1810,30 @@ func (a *App) storePanel(l uiLayout) string {
 		b.WriteString(fmt.Sprintf("  %s Quiet exploit automation — $%s; queues automatically\n",selectedStyle.Render("[3]"),money(game.AutomationCost)))
 	}
 	b.WriteString(labelStyle.Render("  Purchases require cash on hand."))
+	return b.String()
+}
+
+func (a *App) storagePanel(l uiLayout) string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("STORAGE  /  PERSONAL PROPERTY")+"\n")
+	b.WriteString(labelStyle.Render("RESIDENCE: CITY APARTMENT  ·  LIQUID CAPITAL CAPACITY")+"\n\n")
+	b.WriteString(titleStyle.Render("APARTMENT INVENTORY")+"\n")
+	b.WriteString(fmt.Sprintf("  Loose cash capacity     $%s\n",money(game.InitialCashCapacity)))
+	b.WriteString(fmt.Sprintf("  Lockboxes owned          %d\n",a.state.LockboxCount))
+	b.WriteString(fmt.Sprintf("  Total capacity            $%s\n",money(a.state.CashCapacity)))
+	b.WriteString(fmt.Sprintf("  Capital currently held    $%s\n\n",money(a.state.CashOnHand)))
+	if a.state.CashOnHand >= game.LockboxCost {
+		b.WriteString(selectedStyle.Render("[1] BUY LOCKBOX  —  $"+money(game.LockboxCost))+"\n")
+	} else {
+		b.WriteString(labelStyle.Render("[1] BUY LOCKBOX  —  $"+money(game.LockboxCost)+" (INSUFFICIENT CAPITAL)")+"\n")
+	}
+	nextCapacity := game.LockboxCapacity
+	if a.state.LockboxCount >= 3 { nextCapacity = 350_000 }
+	b.WriteString(labelStyle.Render("  Capacity increase: +$"+money(nextCapacity))+"\n")
+	if a.state.LockboxCount >= 3 { b.WriteString(dangerStyle.Render("  CLUTTER: additional boxes attract attention and waste space.")+"\n") }
+	b.WriteString("\n"+labelStyle.Render("Cash above capacity remains yours, but increases exposure."))
+	b.WriteString("\n"+labelStyle.Render("Larger containers and manual transfers will follow in a later storage pass."))
+	b.WriteString("\n\n"+labelStyle.Render("[S] MAIN  ·  [T] STORAGE  ·  [1] BUY LOCKBOX"))
 	return b.String()
 }
 
@@ -574,6 +1931,100 @@ func (a *App) messagesPanel(l uiLayout) string {
 	return b.String()
 }
 
+func (a *App) startNewsDispatch() {
+	if a.state.NewsIndex < 0 || a.state.NewsIndex >= len(game.NewsHeadlines) { return }
+	a.newsHeadline = game.NewsHeadlines[a.state.NewsIndex]
+	a.newsStartedAt = time.Now()
+}
+
+func (a *App) newsStripView(width int) string {
+	if a.newsHeadline == "" {
+		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
+	}
+	now := time.Now()
+	elapsed := now.Sub(a.newsStartedAt)
+	const flashDuration = 2 * time.Second
+	if elapsed < flashDuration {
+		color := amber
+		headline := strings.ToLower(a.newsHeadline)
+		switch {
+		case strings.Contains(headline, "emergency") || strings.Contains(headline, "erodes") || strings.Contains(headline, "families") || strings.Contains(headline, "shortages") || strings.Contains(headline, "extraordinary"):
+			color = red
+		case strings.Contains(headline, "approves") || strings.Contains(headline, "funding") || strings.Contains(headline, "eases") || strings.Contains(headline, "improves"):
+			color = green
+		}
+		if a.uiFrame%4 < 2 { return lipgloss.NewStyle().Foreground(color).Bold(true).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---") }
+		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
+	}
+	runes := []rune(a.newsHeadline)
+	offset := int((elapsed-flashDuration)/(100*time.Millisecond))
+	// Start with a full screen of leading spaces; the headline enters from the
+	// right edge, crosses the entire strip, then clears before the idle marker returns.
+	totalTravel := width + len(runes)
+	if offset >= totalTravel {
+		a.newsHeadline = ""
+		return lipgloss.NewStyle().Foreground(muted).Width(width).Align(lipgloss.Center).Render("--- NEWS BULLETIN ---")
+	}
+	track := strings.Repeat(" ", width) + string(runes) + strings.Repeat(" ", width)
+	start := max(0, min(len([]rune(track)), offset))
+	visibleRunes := []rune(track)[start:]
+	if len(visibleRunes) > width { visibleRunes = visibleRunes[:width] }
+	return lipgloss.NewStyle().Foreground(ink).Width(width).Render(string(visibleRunes))
+}
+
+func visiblePaneText(line string, start, width int) string {
+	runes := []rune(line)
+	if start >= len(runes) || width <= 0 { return "" }
+	end := min(len(runes), start+width)
+	return string(runes[start:end])
+}
+
+// cellOffset returns the visible terminal-cell offset of a substring.
+// Go string indexes count UTF-8 bytes, but mouse coordinates count terminal
+// cells. Box-drawing characters in the rack are multi-byte and one cell wide.
+func cellOffset(line, label string) int {
+	at := strings.Index(line, label)
+	if at < 0 {
+		return -1
+	}
+	return lipgloss.Width(line[:at])
+}
+
+func mouseWithin(line string, x int, label string) bool {
+	at := cellOffset(line, label)
+	return at >= 0 && x >= at && x < at+lipgloss.Width(label)
+}
+
+// rackControlWithin expands a tiny visual control into a more forgiving hit
+// target, using terminal cells rather than UTF-8 byte offsets.
+func rackControlWithin(line string, x int, label string) bool {
+	at := cellOffset(line, label)
+	return at >= 0 && x >= max(0, at-2) && x < at+lipgloss.Width(label)+2
+}
+
+func (a *App) mouseOnTabRow(y int) bool {
+	lines := plainViewLines(a.View())
+	return y >= 0 && y < len(lines) && (strings.Contains(lines[y], "[MAIN]") || strings.Contains(lines[y], "[STORAGE]") || strings.Contains(lines[y], "[MESSAGES"))
+}
+
+func (a *App) isInjectAt(x, y int) bool {
+	if a.screen != screenGame || a.state.CurrentTab != game.TabPrint { return false }
+	lines := plainViewLines(a.View())
+	if y < 0 || y >= len(lines) { return false }
+	return strings.Contains(lines[y], "INJECT")
+}
+
+func (a *App) cycleTab(delta int) {
+	tabs := []game.Tab{game.TabPrint}
+	if a.state.StorageUnlocked { tabs = append(tabs, game.TabStorage) }
+	if a.state.EmailUnlocked { tabs = append(tabs, game.TabMessages) }
+	current := 0
+	for i, tab := range tabs { if tab == a.state.CurrentTab { current = i; break } }
+	current = (current+delta+len(tabs))%len(tabs)
+	_ = a.state.OpenTab(tabs[current])
+	a.message = ""
+}
+
 func fitLines(s string, maxLines int) string {
 	lines:=strings.Split(s,"\n")
 	if len(lines)<=maxLines { return s }
@@ -594,12 +2045,118 @@ func tickerText(s game.State,width int, frame int64) string {
 	loop:=string(append(append([]rune{},runes...),append([]rune("     "),runes...)...))
 	return truncate(string([]rune(loop)[offset:]),width)
 }
-func truncate(s string,width int) string {
-	if width<1 { return "" }
-	r:=[]rune(s); if len(r)<=width { return s }
-	if width<=1 { return string(r[:width]) }
-	return string(r[:width-1])+"…"
+func truncate(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	plain := ansiSequences.ReplaceAllString(s, "")
+	if lipgloss.Width(plain) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+
+	// Copy ANSI control sequences whole, while counting only visible rune
+	// cells. Truncating the raw string by rune count can split true-colour
+	// escapes (for example ESC[38;2;119;121;112m) and corrupt the whole frame.
+	target := width - 1
+	var out strings.Builder
+	used := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if loc := ansiSequences.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
+				out.WriteString(s[i : i+loc[1]])
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		runeText := string(r)
+		cells := lipgloss.Width(runeText)
+		if used+cells > target {
+			break
+		}
+		out.WriteString(runeText)
+		used += cells
+		i += size
+	}
+	out.WriteRune('…')
+	if strings.Contains(s, "\x1b[") {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
 }
+func keyboardControlLines(width int) []string {
+	controls := []string{
+		"X/P inject", "U upgrades", "R rack", "S main", "T storage",
+		"M messages", "1–3 reply", "V save", "H help", "Q quit",
+	}
+	full := strings.Join(controls, "  ")
+	if lipgloss.Width(full) <= width {
+		return []string{full}
+	}
+	// For the common two-line case, split near the middle instead of leaving
+	// just one shortcut stranded on the final line.
+	if width >= 49 {
+		return []string{strings.Join(controls[:5], "  "), strings.Join(controls[5:], "  ")}
+	}
+	var lines []string
+	line := ""
+	for _, control := range controls {
+		if line == "" {
+			line = control
+			continue
+		}
+		candidate := line + "  " + control
+		if lipgloss.Width(candidate) <= width {
+			line = candidate
+		} else {
+			lines = append(lines, line)
+			line = control
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func clipToWidth(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+
+	var out strings.Builder
+	used := 0
+	hasANSI := strings.Contains(s, "\x1b[")
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if loc := ansiSequences.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
+				out.WriteString(s[i : i+loc[1]])
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		runeText := string(r)
+		cells := lipgloss.Width(runeText)
+		if used+cells > width {
+			break
+		}
+		out.WriteString(runeText)
+		used += cells
+		i += size
+	}
+	if hasANSI {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
+}
+
 func wrapText(s string,width int) string {
 	if width<8 { width=8 }
 	var out []string
@@ -614,4 +2171,8 @@ func wrapText(s string,width int) string {
 	}
 	return strings.Join(out,"\n")
 }
-func money(cents int64) string { return fmt.Sprintf("%d.%02d",cents/100,cents%100) }
+func money(cents int64) string {
+	whole := fmt.Sprintf("%d",cents/100)
+	for i:=len(whole)-3; i>0; i-=3 { whole = whole[:i]+","+whole[i:] }
+	return fmt.Sprintf("%s.%02d",whole,cents%100)
+}
