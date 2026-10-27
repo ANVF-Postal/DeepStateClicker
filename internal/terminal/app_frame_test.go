@@ -141,7 +141,7 @@ func TestUpgradeDetailsUseSpacedColoredHeaderAndBottomAnchoredFooter(t *testing.
 	if headerY+2 >= len(lines) || rightText(headerY+2) != "" {
 		t.Fatal("upgrade description should be separated from the title by a blank line")
 	}
-	plainView := strings.Join(plainViewLines(view), " ")
+	plainView := strings.Join(strings.Fields(strings.Join(plainViewLines(view), " ")), " ")
 	if !strings.Contains(plainView, "Extends the injection opportunity by") || !strings.Contains(plainView, "second per revision.") {
 		t.Fatal("wrapped upgrade description should remain visible")
 	}
