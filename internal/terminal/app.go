@@ -991,11 +991,10 @@ func (a *App) gameView() string {
 	}
 	// Wrap the keyboard legend to the actual content width. The former single
 	// line was wider than many terminals and got clipped by the outer frame.
-	keyboardControls := "X/P inject  •  U upgrades  •  R rack  •  S main  •  T storage  •  M messages  •  1–3 reply  •  V save  •  H help  •  Q quit"
 	footerWidth := max(12, min(l.Width-4, a.width-5))
-	keyboardLines := strings.Split(wrapText(keyboardControls, footerWidth), "\n")
-	if a.width < 48 || l.Height < 18 {
-		keyboardLines = []string{"RESIZE  •  Q quit"}
+	keyboardLines := keyboardControlLines(footerWidth)
+	if a.width < 32 || l.Height < 18 {
+		keyboardLines = []string{"RESIZE / Q QUIT"}
 	}
 	footerRows := len(keyboardLines)
 	panelLines := max(4, panelLineLimit(l, a.message != "")-(footerRows-1))
@@ -2085,6 +2084,41 @@ func truncate(s string, width int) string {
 	}
 	return out.String()
 }
+func keyboardControlLines(width int) []string {
+	controls := []string{
+		"X/P inject", "U upgrades", "R rack", "S main", "T storage",
+		"M messages", "1–3 reply", "V save", "H help", "Q quit",
+	}
+	full := strings.Join(controls, "  ")
+	if lipgloss.Width(full) <= width {
+		return []string{full}
+	}
+	// For the common two-line case, split near the middle instead of leaving
+	// just one shortcut stranded on the final line.
+	if width >= 49 {
+		return []string{strings.Join(controls[:5], "  "), strings.Join(controls[5:], "  ")}
+	}
+	var lines []string
+	line := ""
+	for _, control := range controls {
+		if line == "" {
+			line = control
+			continue
+		}
+		candidate := line + "  " + control
+		if lipgloss.Width(candidate) <= width {
+			line = candidate
+		} else {
+			lines = append(lines, line)
+			line = control
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func clipToWidth(s string, width int) string {
 	if width < 1 {
 		return ""
