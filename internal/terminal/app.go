@@ -642,9 +642,10 @@ func stableTerminalFrame(view string, width, height int) string {
 	}
 	for i, line := range lines {
 		if lipgloss.Width(line) > width {
-			// Last-resort clipping is ANSI-aware: terminal style sequences
-			// must never be cut in half and printed as visible characters.
-			line = truncate(line, width)
+			// This is an emergency frame boundary, not content truncation. Hard-clip
+			// here without adding an ellipsis to every overflowing row; the latter
+			// creates a distracting column of dots in narrow terminals.
+			line = clipToWidth(line, width)
 		}
 		if cells := lipgloss.Width(line); cells < width {
 			line += strings.Repeat(" ", width-cells)
@@ -988,12 +989,21 @@ func (a *App) gameView() string {
 	case game.TabStorage: panel = a.storagePanel(l)
 	case game.TabMessages: panel = a.messagesPanel(l)
 	}
-	panelLines := panelLineLimit(l, a.message != "")
+	// Wrap the keyboard legend to the actual content width. The former single
+	// line was wider than many terminals and got clipped by the outer frame.
+	keyboardControls := "X/P inject  •  U upgrades  •  R rack  •  S main  •  T storage  •  M messages  •  1–3 reply  •  V save  •  H help  •  Q quit"
+	footerWidth := max(12, min(l.Width-4, a.width-5))
+	keyboardLines := strings.Split(wrapText(keyboardControls, footerWidth), "\n")
+	if a.width < 48 || l.Height < 18 {
+		keyboardLines = []string{"RESIZE  •  Q quit"}
+	}
+	footerRows := len(keyboardLines)
+	panelLines := max(4, panelLineLimit(l, a.message != "")-(footerRows-1))
 	panel = fitLines(panel, panelLines)
 	b.WriteString(panel+"\n")
 	if a.message != "" { b.WriteString(subtitleStyle.Render(truncate(a.message, max(12, l.Width-4)))+"\n") }
-	for strings.Count(b.String(), "\n") < l.TickerY-1 { b.WriteString("\n") }
-	b.WriteString(labelStyle.Render("X/P inject  U upgrades  R rack  S main  T storage  M messages  1–3 reply  V save  H help  Q quit"))
+	for strings.Count(b.String(), "\n") < l.TickerY-footerRows { b.WriteString("\n") }
+	b.WriteString(labelStyle.Render(strings.Join(keyboardLines, "\n")))
 	return lipgloss.NewStyle().Padding(1,2).Render(b.String())
 }
 
@@ -2075,6 +2085,41 @@ func truncate(s string, width int) string {
 	}
 	return out.String()
 }
+func clipToWidth(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+
+	var out strings.Builder
+	used := 0
+	hasANSI := strings.Contains(s, "\x1b[")
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if loc := ansiSequences.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
+				out.WriteString(s[i : i+loc[1]])
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		runeText := string(r)
+		cells := lipgloss.Width(runeText)
+		if used+cells > width {
+			break
+		}
+		out.WriteString(runeText)
+		used += cells
+		i += size
+	}
+	if hasANSI {
+		out.WriteString("\x1b[0m")
+	}
+	return out.String()
+}
+
 func wrapText(s string,width int) string {
 	if width<8 { width=8 }
 	var out []string
