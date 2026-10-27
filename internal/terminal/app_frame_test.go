@@ -76,6 +76,52 @@ func TestViewUsesStableTerminalFrameAcrossPanels(t *testing.T) {
 }
 
 
+func TestStableFrameHardClipsWithoutEdgeEllipsis(t *testing.T) {
+	view := stableTerminalFrame("first row is too long\nsecond row is too long", 12, 2)
+	lines := plainViewLines(view)
+	if len(lines) != 2 {
+		t.Fatalf("frame has %d rows; want 2", len(lines))
+	}
+	for row, line := range lines {
+		if got := lipgloss.Width(line); got != 12 {
+			t.Errorf("row %d has width %d; want 12: %q", row, got, line)
+		}
+		if strings.HasSuffix(strings.TrimRight(line, " "), "…") {
+			t.Errorf("emergency frame clipping should not stamp an ellipsis on row %d: %q", row, line)
+		}
+	}
+}
+
+func TestNarrowMainViewKeepsKeyboardControlsVisible(t *testing.T) {
+	app := New(game.NewState(time.Unix(1, 0)))
+	app.width, app.height = 60, 24
+	app.screen = screenGame
+	app.state.CurrentTab = game.TabPrint
+	app.mainView = "print"
+
+	lines := plainViewLines(app.View())
+	view := strings.Join(lines, "\n")
+	for _, hint := range []string{
+		"X/P inject", "U upgrades", "R rack", "S main", "T storage",
+		"M messages", "1–3 reply", "V save", "H help", "Q quit",
+	} {
+		if !strings.Contains(view, hint) {
+			t.Errorf("narrow terminal view should keep keyboard hint %q visible", hint)
+		}
+	}
+	if len(lines) < 4 || !strings.Contains(strings.Join(lines[len(lines)-4:], "\n"), "Q quit") {
+		t.Fatal("keyboard controls should remain visible at the bottom of the frame")
+	}
+	for row, line := range lines {
+		if got := lipgloss.Width(line); got != 59 {
+			t.Errorf("row %d has width %d; want 59", row, got)
+		}
+		if strings.HasSuffix(strings.TrimRight(line, " "), "…") {
+			t.Errorf("narrow view should not end a frame row with a clipping ellipsis: row %d: %q", row, line)
+		}
+	}
+}
+
 func TestTruncateDoesNotLeakPartialTrueColorSequences(t *testing.T) {
 	input := "\x1b[38;2;119;121;112mAVAILABLE\x1b[0m"
 	got := truncate(input, 6)
